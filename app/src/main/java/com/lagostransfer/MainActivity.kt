@@ -225,29 +225,27 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
                         if (!isUpToDate) {
                             if (apkFile == null) {
                                 Button(enabled = !updating, onClick = {
-                                    updating = true
-                                    progress = 0
-                                    try {
-                                        val dmId = UpdateChecker.enqueue(ctx, updateInfo!!.url)
-                                        scope.launch {
-                                            try {
-                                                while (true) {
-                                                    val (pct, status) = UpdateChecker.queryProgress(ctx, dmId)
-                                                    progress = pct
-                                                    if (status == android.app.DownloadManager.STATUS_SUCCESSFUL) {
-                                                        val file = UpdateChecker.fileForId(ctx, dmId)
-                                                        if (file != null && file.exists()) apkFile = file else snacks.showSnackbar("Download failed")
-                                                        break
-                                                    } else if (status == android.app.DownloadManager.STATUS_FAILED) {
-                                                        snacks.showSnackbar("Download failed")
-                                                        break
-                                                    }
-                                                    kotlinx.coroutines.delay(500)
+                                    scope.launch {
+                                        updating = true
+                                        progress = 0
+                                        try {
+                                            val dmId = UpdateChecker.enqueue(ctx, updateInfo!!.url)
+                                            while (true) {
+                                                val (pct, status) = UpdateChecker.queryProgress(ctx, dmId)
+                                                progress = pct
+                                                if (status == android.app.DownloadManager.STATUS_SUCCESSFUL) {
+                                                    val file = UpdateChecker.fileForId(ctx, dmId)
+                                                    if (file != null && file.exists()) apkFile = file else snacks.showSnackbar("Download failed")
+                                                    break
+                                                } else if (status == android.app.DownloadManager.STATUS_FAILED) {
+                                                    snacks.showSnackbar("Download failed")
+                                                    break
                                                 }
-                                            } catch (e: Exception) { snacks.showSnackbar("Update failed: ${e.message}") }
-                                            updating = false
-                                        }
-                                    } catch (e: Exception) { snacks.showSnackbar("Update failed: ${e.message}"); updating = false }
+                                                kotlinx.coroutines.delay(500)
+                                            }
+                                        } catch (e: Exception) { snacks.showSnackbar("Update failed: ${e.message}") }
+                                        updating = false
+                                    }
                                 }) { Text(if (updating) "Downloading…" else "Update now") }
                                 if (updating) {
                                     Spacer(Modifier.height(6.dp))
