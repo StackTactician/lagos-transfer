@@ -29,6 +29,8 @@ import com.lagostransfer.data.KeepAlive
 import com.lagostransfer.ui.theme.LagosTransferTheme
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import java.text.NumberFormat
 import java.util.Locale
@@ -89,13 +91,17 @@ fun App() {
     LaunchedEffect(Unit) {
         try {
             val saved = SecureStore.loadAccounts(ctxApp)
-            for ((u, pp, pin) in saved) {
-                if (accounts.any { it.username == u }) continue
+            if (saved.isEmpty()) { isSyncing = false; return@LaunchedEffect }
+            val deferred = saved.map { (u, pp, pin) ->
+                if (accounts.any { it.username == u }) return@map null
                 val acc = SessionAccount(u, pp, pin, LagosClient())
-                try { acc.client.login(com.lagostransfer.data.Account(u, pp, pin)) } catch (e: Exception) { /* silent */ }
-                try { acc.balance = acc.client.getBalance() } catch (e: Exception) { /* silent */ }
                 accounts.add(acc)
-            }
+                async(Dispatchers.IO) {
+                    try { acc.client.login(com.lagostransfer.data.Account(u, pp, pin)) } catch (_: Exception) {}
+                    try { acc.balance = acc.client.getBalance() } catch (_: Exception) {}
+                }
+            }.filterNotNull()
+            deferred.forEach { try { it.await() } catch (_: Exception) {} }
         } catch (e: Exception) { /* silent */ } finally { isSyncing = false }
     } // null=master, "history"=ledger
 
