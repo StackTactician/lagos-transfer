@@ -185,17 +185,32 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(if (isUpToDate) "App is up to date" else "Update available - ${updateInfo!!.tag}", fontWeight = FontWeight.Bold)
                         Text(if (isUpToDate) "You are on the latest version." else "Tap to download and install the latest version.", style = MaterialTheme.typography.bodySmall)
+                        var progress by remember { mutableStateOf(0) }
+                        var apkFile by remember { mutableStateOf<java.io.File?>(null) }
                         if (!isUpToDate) {
-                            Button(enabled = !updating, onClick = {
-                                updating = true
-                                scope.launch {
-                                    try {
-                                        val file = UpdateChecker.download(ctx, updateInfo!!.url)
-                                        if (file != null) UpdateChecker.install(ctx, file) else snacks.showSnackbar("Download failed")
-                                    } catch (e: Exception) { snacks.showSnackbar("Update failed: ${e.message}") }
-                                    updating = false
+                            if (apkFile == null) {
+                                Button(enabled = !updating, onClick = {
+                                    updating = true
+                                    progress = 0
+                                    scope.launch {
+                                        try {
+                                            val file = UpdateChecker.download(ctx, updateInfo!!.url) { p -> progress = p }
+                                            if (file != null) { apkFile = file } else snacks.showSnackbar("Download failed")
+                                        } catch (e: Exception) { snacks.showSnackbar("Update failed: ${e.message}") }
+                                        updating = false
+                                    }
+                                }) { Text(if (updating) "Downloading…" else "Update now") }
+                                if (updating) {
+                                    Spacer(Modifier.height(6.dp))
+                                    LinearProgressIndicator(progress = { progress / 100f }, modifier = Modifier.fillMaxWidth().height(4.dp))
+                                    Text("${progress}%", style = MaterialTheme.typography.labelSmall)
                                 }
-                            }) { Text(if (updating) "Downloading…" else "Update now") }
+                            } else {
+                                Text("Downloaded - ready to install", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                                LinearProgressIndicator(progress = { 1f }, modifier = Modifier.fillMaxWidth().height(4.dp))
+                                Spacer(Modifier.height(6.dp))
+                                Button(onClick = { apkFile?.let { UpdateChecker.install(ctx, it) } }, modifier = Modifier.fillMaxWidth()) { Text("Install now") }
+                            }
                         }
                     }
                 }
