@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.LagosTransfer" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@drawable/splash_icon</item>
+    </style>
+    <style name="Theme.LagosTransfer.Splash" parent="Theme.LagosTransfer">
+        <item name="android:windowBackground">@drawable/splash_icon</item>
+    </style>
+</resources>

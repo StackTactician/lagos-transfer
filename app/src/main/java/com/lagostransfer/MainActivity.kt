@@ -20,8 +20,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.lagostransfer.data.*
 import com.lagostransfer.ui.theme.LagosTransferTheme
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.NumberFormat
@@ -41,6 +43,7 @@ data class SessionAccount(
 class MainActivity : ComponentActivity() {
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
         super.onCreate(savedInstanceState)
         if (Build.VERSION.SDK_INT >= 33) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -122,6 +125,7 @@ fun App() {
 
 @Composable
 fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState, onSelect: (String) -> Unit) {
+    val ctx = LocalContext.current
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") }
@@ -159,6 +163,7 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
                         } catch (_: Exception) {
                             snacks.showSnackbar("Logged in @${acc.username}")
                         }
+                        SecureStore.saveAccount(ctx, acc.username, acc.password, acc.pin)
                         accounts.add(acc)
                         username = ""; password = ""; pin = ""
                         busy = false
@@ -192,7 +197,7 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
                                     } catch (e: Exception) { snacks.showSnackbar("Could not refresh @${acc.username}") }
                                 }
                             }) { Text("Refresh") }
-                            TextButton(onClick = { accounts.remove(acc) }) { Text("Log out") }
+                            TextButton(onClick = { SecureStore.removeAccount(ctx, acc.username); accounts.remove(acc) }) { Text("Log out") }
                         }
                     }
                 }
@@ -204,17 +209,19 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
 @Composable
 fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
     val ctx = LocalContext.current
+    val db = remember { LogDb(ctx) }
     var recipient by remember { mutableStateOf("") }
     var amount by remember { mutableStateOf("10000000000") }
     var times by remember { mutableStateOf("1") }
     var note by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
-    var log by remember { mutableStateOf(listOf<String>()) }
+    var currentJob by remember { mutableStateOf<Job?>(null) }
+    var log by remember { mutableStateOf(db.all(acc.username)) }
     val scope = rememberCoroutineScope()
     var balanceText by remember { mutableStateOf(acc.balance?.let { naira(it.money) } ?: "—") }
     var canSendText by remember { mutableStateOf(acc.balance?.canSend?.let { naira(it) } ?: "—") }
 
-    fun add(s: String) { log = listOf(s) + log.take(80) }
+    fun add(s: String) { log = listOf(s) + log.take(100) }
 
     LaunchedEffect(acc.username) {
         try {
@@ -223,6 +230,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
             balanceText = naira(b.money)
             canSendText = b.canSend?.let { naira(it) } ?: "—"
         } catch (_: Exception) {}
+        log = db.all(acc.username)
     }
 
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -303,67 +311,86 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
             val amt = amount.toLongOrNull() ?: 0
             val t = times.toIntOrNull() ?: 0
             val canSend = amt in 100..10_000_000_000 && t in 1..999 && recipient.isNotBlank()
-            Button(
-                enabled = !busy && acc.enabled && canSend,
-                modifier = Modifier.fillMaxWidth(),
-                onClick = {
-                    if (!acc.enabled) { scope.launch { snacks.showSnackbar("Transfers paused for @${acc.username}") }; return@Button }
-                    busy = true
-                    scope.launch {
-                        snacks.showSnackbar("Resolving @$recipient…")
-                        val toId = try { acc.client.resolveUsername(recipient) } catch (e: Exception) { null }
-                        if (toId == null) {
-                            snacks.showSnackbar("Could not find @$recipient")
-                            add("✗ @$recipient not found")
-                            busy = false
-                            return@launch
-                        }
-                        TransferNotify.ensureChannel(ctx)
-                        var okCount = 0
-                        for (i in 1..t) {
-                            if (!acc.enabled) { add("⏸ paused at $i/$t"); break }
-                            TransferNotify.showProgress(ctx, acc.username, i, t, amt, "Sending ${i}/${t}")
-                            snacks.showSnackbar("Sending ${i}/${t} → @$recipient ${naira(amt)}")
-                            try {
-                                val r = acc.client.sendMoney(toId, amt, note.ifBlank { null }, acc.pin)
-                                if (r.optBoolean("ok", false)) {
-                                    okCount++
-                                    add("✓ ${i}/${t} ${naira(amt)} → @$recipient")
-                                } else {
-                                    val msg = r.optString("error").ifBlank { "Could not send" }
-                                    val friendly = when {
-                                        msg.contains("fund", true) -> "Not enough funds"
-                                        msg.contains("limit", true) -> "Daily limit reached"
-                                        msg.contains("frozen", true) -> "Account frozen"
-                                        msg.contains("pin", true) -> "PIN wrong"
-                                        else -> msg.take(80)
-                                    }
-                                    add("✗ ${i}/${t} — $friendly")
-                                    TransferNotify.showError(ctx, acc.username, friendly)
-                                }
-                            } catch (e: Exception) {
-                                add("✗ ${i}/${t} — ${e.message?.take(60) ?: "error"}")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    enabled = !busy && acc.enabled && canSend,
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        if (!acc.enabled) { scope.launch { snacks.showSnackbar("Transfers paused for @${acc.username}") }; return@Button }
+                        busy = true
+                        val job = scope.launch {
+                            snacks.showSnackbar("Resolving @$recipient…")
+                            val toId = try { acc.client.resolveUsername(recipient) } catch (e: Exception) { null }
+                            if (toId == null) {
+                                snacks.showSnackbar("Could not find @$recipient")
+                                val rem = t
+                                db.insert(acc.username, recipient, amt, "not_found", 0, rem, amt * rem)
+                                add("✗ @$recipient not found · 0/${t} · ${naira(amt * rem)} left")
+                                busy = false
+                                return@launch
                             }
-                            if (i < t) delay(32_000)
+                            TransferNotify.ensureChannel(ctx)
+                            var okCount = 0
+                            for (i in 1..t) {
+                                if (!acc.enabled) { add("⏸ paused at $i/$t"); break }
+                                TransferNotify.showProgress(ctx, acc.username, i, t, amt, "Sending $i/$t to @$recipient")
+                                snacks.showSnackbar("Sending $i/$t → @$recipient ${naira(amt)}")
+                                var status = "fail"
+                                try {
+                                    val r = acc.client.sendMoney(toId, amt, note.ifBlank { null }, acc.pin)
+                                    if (r.optBoolean("ok", false)) {
+                                        okCount++
+                                        status = "sent"
+                                        val left = t - i
+                                        val amtLeft = amt * left
+                                        db.insert(acc.username, recipient, amt, status, i, left, amtLeft)
+                                        add("✓ $i/$t ${naira(amt)} → @$recipient · $i sent, $left left, ${naira(amtLeft)} left")
+                                    } else {
+                                        val msg = r.optString("error").ifBlank { "Could not send" }
+                                        val friendly = when {
+                                            msg.contains("fund", true) -> "Not enough funds"
+                                            msg.contains("limit", true) -> "Daily limit reached"
+                                            msg.contains("frozen", true) -> "Account frozen"
+                                            msg.contains("pin", true) -> "PIN wrong"
+                                            else -> msg.take(80)
+                                        }
+                                        val left = t - i
+                                        db.insert(acc.username, recipient, amt, friendly, i-1, left+1, amt*(left+1))
+                                        add("✗ $i/$t — $friendly · ${i-1} sent, ${left+1} left")
+                                        TransferNotify.showError(ctx, acc.username, friendly)
+                                    }
+                                } catch (e: Exception) {
+                                    val left = t - i
+                                    db.insert(acc.username, recipient, amt, "error", i-1, left+1, amt*(left+1))
+                                    add("✗ $i/$t — ${e.message?.take(60) ?: "error"}")
+                                }
+                                log = db.all(acc.username)
+                                if (i < t) delay(32_000)
+                            }
+                            try {
+                                val b = acc.client.getBalance()
+                                acc.balance = b
+                                balanceText = naira(b.money)
+                                canSendText = b.canSend?.let { naira(it) } ?: "—"
+                            } catch (_: Exception) {}
+                            TransferNotify.showDone(ctx, acc.username, okCount, t)
+                            snacks.showSnackbar("Done — $okCount/$t sent from @${acc.username} to @$recipient · ${naira(amt * (t - okCount))} left")
+                            busy = false
                         }
-                        try {
-                            val b = acc.client.getBalance()
-                            acc.balance = b
-                            balanceText = naira(b.money)
-                            canSendText = b.canSend?.let { naira(it) } ?: "—"
-                        } catch (_: Exception) {}
-                        TransferNotify.showDone(ctx, acc.username, okCount, t)
-                        snacks.showSnackbar("Done — $okCount/$t sent from @${acc.username} to @$recipient")
-                        busy = false
+                        currentJob = job
+                        job.invokeOnCompletion { currentJob = null; busy = false }
                     }
+                ) {
+                    val tInt = times.toIntOrNull() ?: 0
+                    Text(if (busy) "Sending… 32s gap" else if (!acc.enabled) "Paused" else "Send ${if (tInt>0) "${tInt}× " else ""}${if (amt>0) naira(amt) else ""} to @$recipient".trim())
                 }
-            ) {
-                val tInt = times.toIntOrNull() ?: 0
-                Text(if (busy) "Sending… 32s gap" else if (!acc.enabled) "Paused" else "Send ${if (tInt>0) "${tInt}× " else ""}${if (amt>0) naira(amt) else ""} to @$recipient".trim())
+                if (busy) {
+                    OutlinedButton(onClick = { currentJob?.cancel(); busy = false; add("■ Stopped by user"); scope.launch { snacks.showSnackbar("Stopped") } }) { Text("Stop") }
+                }
             }
         }
         item { Divider() }
-        item { Text("Activity", fontWeight = FontWeight.SemiBold) }
+        item { Text("Activity — ${log.size} saved (SQLite, hashed recipients)", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelSmall) }
         items(log) { Text(it, style = MaterialTheme.typography.bodySmall) }
     }
 }
