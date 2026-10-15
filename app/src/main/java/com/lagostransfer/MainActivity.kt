@@ -73,7 +73,20 @@ fun App() {
     val scope = rememberCoroutineScope()
     val snackbarHost = remember { SnackbarHostState() }
     val accounts = remember { mutableStateListOf<SessionAccount>() }
-    var selected by remember { mutableStateOf<String?>(null) } // null=master, "history"=ledger
+    var selected by remember { mutableStateOf<String?>(null) }
+    val ctxApp = LocalContext.current
+    LaunchedEffect(Unit) {
+        try {
+            val saved = SecureStore.loadAccounts(ctxApp)
+            for ((u, pp, pin) in saved) {
+                if (accounts.any { it.username == u }) continue
+                val acc = SessionAccount(u, pp, pin, LagosClient())
+                try { acc.client.login(com.lagostransfer.data.Account(u, pp, pin)) } catch (_: Exception) {}
+                try { acc.balance = acc.client.getBalance() } catch (_: Exception) {}
+                accounts.add(acc)
+            }
+        } catch (_: Exception) {}
+    } // null=master, "history"=ledger
 
     ModalNavigationDrawer(
         drawerState = drawerState,
