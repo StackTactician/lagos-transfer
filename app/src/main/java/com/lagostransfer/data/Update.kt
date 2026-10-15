@@ -2,7 +2,6 @@ package com.lagostransfer.data
 
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -14,7 +13,7 @@ import java.util.concurrent.TimeUnit
 
 object UpdateChecker {
     private val client = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build()
-    data class Info(val tag: String, val url: String, val name: String)
+    data class Info(val tag: String, val url: String, val name: String, val updatedAt: String?)
 
     suspend fun latest(): Info? = withContext(Dispatchers.IO) {
         val req = Request.Builder().url("https://api.github.com/repos/StackTactician/lagos-transfer/releases/tags/latest")
@@ -23,10 +22,24 @@ object UpdateChecker {
         if (res.code != 200) return@withContext null
         val j = JSONObject(res.body!!.string())
         val tag = j.optString("tag_name", "")
+        val updatedAt = j.optString("published_at", null) ?: j.optString("updated_at", null)
         val assets = j.optJSONArray("assets") ?: return@withContext null
         if (assets.length() == 0) return@withContext null
         val a0 = assets.getJSONObject(0)
-        Info(tag, a0.getString("browser_download_url"), a0.getString("name"))
+        val assetUpdated = a0.optString("updated_at", null)
+        Info(tag, a0.getString("browser_download_url"), a0.getString("name"), assetUpdated ?: updatedAt)
+    }
+
+    fun isUpToDate(ctx: Context, remoteUpdatedAt: String?): Boolean {
+        if (remoteUpdatedAt == null) return false
+        return try {
+            val pm = ctx.packageManager
+            val pkg = pm.getPackageInfo(ctx.packageName, 0)
+            val installTime = pkg.lastUpdateTime
+            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+            val remoteTime = try { sdf.parse(remoteUpdatedAt)?.time ?: 0L } catch (_: Exception) { java.time.Instant.parse(remoteUpdatedAt).toEpochMilli() }
+            installTime >= remoteTime - 60000
+        } catch (_: Exception) { false }
     }
 
     suspend fun download(ctx: Context, url: String, onProgress: (Int)->Unit = {}): File? = withContext(Dispatchers.IO) {

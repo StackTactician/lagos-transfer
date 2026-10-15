@@ -81,12 +81,12 @@ fun App() {
                 Text("  Transfer only", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 16.dp))
                 Divider(Modifier.padding(vertical = 12.dp))
                 NavigationDrawerItem(
-                    label = { Text("Master — Accounts") },
+                    label = { Text("Master - Accounts") },
                     selected = selected == null,
                     onClick = { selected = null; scope.launch { drawerState.close() } }
                 )
                 NavigationDrawerItem(
-                    label = { Text("History — Ledger") },
+                    label = { Text("Transfer History") },
                     selected = selected == "history",
                     onClick = { selected = "history"; scope.launch { drawerState.close() } }
                 )
@@ -108,7 +108,7 @@ fun App() {
         Scaffold(
             topBar = {
                 CenterAlignedTopAppBar(
-                    title = { Text(when (selected) { null -> "Master"; "history" -> "Ledger"; else -> "@$selected" }, fontWeight = FontWeight.SemiBold) },
+                    title = { Text(when (selected) { null -> "Master"; "history" -> "Transfer History"; else -> "@$selected" }, fontWeight = FontWeight.SemiBold) },
                     navigationIcon = {
                         IconButton(onClick = { scope.launch { drawerState.open() } }) {
                             Text("☰", style = MaterialTheme.typography.titleLarge)
@@ -142,21 +142,27 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
     var busy by remember { mutableStateOf(false) }
     var updateInfo by remember { mutableStateOf<UpdateChecker.Info?>(null) }
     var updating by remember { mutableStateOf(false) }
+    var isUpToDate by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
-        try { updateInfo = UpdateChecker.latest() } catch (_: Exception) {}
+        try {
+            val info = UpdateChecker.latest()
+            updateInfo = info
+            isUpToDate = info?.let { UpdateChecker.isUpToDate(ctx, it.updatedAt) } ?: false
+        } catch (_: Exception) {}
     }
 
-    val keepAliveOk = KeepAlive.isIgnoringBattery(ctx)
+    var keepAliveOk by remember { mutableStateOf(KeepAlive.isIgnoringBattery(ctx)) }
+    LaunchedEffect(Unit) { while (true) { keepAliveOk = KeepAlive.isIgnoringBattery(ctx); delay(2000) } }
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         if (!keepAliveOk) {
             item {
                 ElevatedCard(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("Keep alive in background", fontWeight = FontWeight.Bold)
-                        Text("Long transfers (32s × many) die if system kills app. Allow to run in background — strongest available.", style = MaterialTheme.typography.bodySmall)
-                        Button(onClick = { KeepAlive.requestIgnoreBattery(ctx) }, modifier = Modifier.fillMaxWidth()) { Text("Allow background — persist powerfully") }
+                        Text("Long transfers (32s × many) die if system kills app. Allow to run in background - strongest available.", style = MaterialTheme.typography.bodySmall)
+                        Button(onClick = { KeepAlive.requestIgnoreBattery(ctx) }, modifier = Modifier.fillMaxWidth()) { Text("Allow background - persist powerfully") }
                     }
                 }
             }
@@ -165,18 +171,20 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
             item {
                 ElevatedCard(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("Update available — ${updateInfo!!.tag}", fontWeight = FontWeight.Bold)
-                        Text("Tap to download and install. Auto-update from GitHub latest.", style = MaterialTheme.typography.bodySmall)
-                        Button(enabled = !updating, onClick = {
-                            updating = true
-                            scope.launch {
-                                try {
-                                    val file = UpdateChecker.download(ctx, updateInfo!!.url)
-                                    if (file != null) UpdateChecker.install(ctx, file) else snacks.showSnackbar("Download failed")
-                                } catch (e: Exception) { snacks.showSnackbar("Update failed: ${e.message}") }
-                                updating = false
-                            }
-                        }) { Text(if (updating) "Downloading…" else "Update now") }
+                        Text(if (isUpToDate) "App is up to date" else "Update available - ${updateInfo!!.tag}", fontWeight = FontWeight.Bold)
+                        Text(if (isUpToDate) "You are on the latest version." else "Tap to download and install. Auto-update from GitHub latest.", style = MaterialTheme.typography.bodySmall)
+                        if (!isUpToDate) {
+                            Button(enabled = !updating, onClick = {
+                                updating = true
+                                scope.launch {
+                                    try {
+                                        val file = UpdateChecker.download(ctx, updateInfo!!.url)
+                                        if (file != null) UpdateChecker.install(ctx, file) else snacks.showSnackbar("Download failed")
+                                    } catch (e: Exception) { snacks.showSnackbar("Update failed: ${e.message}") }
+                                    updating = false
+                                }
+                            }) { Text(if (updating) "Downloading…" else "Update now") }
+                        }
                     }
                 }
             }
@@ -201,13 +209,13 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
                         val acc = SessionAccount(username.trim(), password, pin.ifBlank { null }, LagosClient())
                         val ok = try { acc.client.login(com.lagostransfer.data.Account(acc.username, acc.password, acc.pin)) } catch (e: Exception) { false }
                         if (!ok) {
-                            snacks.showSnackbar("Could not log in @${acc.username} — check username/password")
+                            snacks.showSnackbar("Could not log in @${acc.username} - check username/password")
                             busy = false
                             return@launch
                         }
                         try {
                             acc.balance = acc.client.getBalance()
-                            snacks.showSnackbar("Logged in @${acc.username} — ${naira(acc.balance!!.money)}")
+                            snacks.showSnackbar("Logged in @${acc.username} - ${naira(acc.balance!!.money)}")
                         } catch (_: Exception) {
                             snacks.showSnackbar("Logged in @${acc.username}")
                         }
@@ -232,7 +240,7 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
                             Badge { Text(if (acc.enabled) "ON" else "OFF") }
                         }
                         Text(
-                            acc.balance?.let { "${naira(it.money)}  ·  Can send ${it.canSend?.let { c -> naira(c) } ?: "—"}" } ?: "Tap to refresh balance",
+                            acc.balance?.let { "${naira(it.money)}  ·  Can send ${it.canSend?.let { c -> naira(c) } ?: "-"}" } ?: "Tap to refresh balance",
                             style = MaterialTheme.typography.bodySmall
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -241,7 +249,7 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
                                 scope.launch {
                                     try {
                                         acc.balance = acc.client.getBalance()
-                                        snacks.showSnackbar("@${acc.username} — ${naira(acc.balance!!.money)}")
+                                        snacks.showSnackbar("@${acc.username} - ${naira(acc.balance!!.money)}")
                                     } catch (e: Exception) { snacks.showSnackbar("Could not refresh @${acc.username}") }
                                 }
                             }) { Text("Refresh") }
@@ -266,8 +274,8 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
     var currentJob by remember { mutableStateOf<Job?>(null) }
     var log by remember { mutableStateOf(db.all(acc.username)) }
     val scope = rememberCoroutineScope()
-    var balanceText by remember { mutableStateOf(acc.balance?.let { naira(it.money) } ?: "—") }
-    var canSendText by remember { mutableStateOf(acc.balance?.canSend?.let { naira(it) } ?: "—") }
+    var balanceText by remember { mutableStateOf(acc.balance?.let { naira(it.money) } ?: "-") }
+    var canSendText by remember { mutableStateOf(acc.balance?.canSend?.let { naira(it) } ?: "-") }
 
     fun add(s: String) { log = listOf(s) + log.take(100) }
 
@@ -276,7 +284,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
             val b = acc.client.getBalance()
             acc.balance = b
             balanceText = naira(b.money)
-            canSendText = b.canSend?.let { naira(it) } ?: "—"
+            canSendText = b.canSend?.let { naira(it) } ?: "-"
         } catch (_: Exception) {}
         log = db.all(acc.username)
     }
@@ -301,7 +309,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                                 val b = acc.client.getBalance()
                                 acc.balance = b
                                 balanceText = naira(b.money)
-                                canSendText = b.canSend?.let { naira(it) } ?: "—"
+                                canSendText = b.canSend?.let { naira(it) } ?: "-"
                             } catch (e: Exception) { }
                         }
                     }) { Text("Refresh balance") }
@@ -403,13 +411,13 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                                         }
                                         val left = t - i
                                         db.insert(acc.username, recipient, amt, friendly, i-1, left+1, amt*(left+1))
-                                        add("✗ $i/$t — $friendly · ${i-1} sent, ${left+1} left")
+                                        add("✗ $i/$t - $friendly · ${i-1} sent, ${left+1} left")
                                         TransferNotify.showError(ctx, acc.username, friendly)
                                     }
                                 } catch (e: Exception) {
                                     val left = t - i
                                     db.insert(acc.username, recipient, amt, "error", i-1, left+1, amt*(left+1))
-                                    add("✗ $i/$t — ${e.message?.take(60) ?: "error"}")
+                                    add("✗ $i/$t - ${e.message?.take(60) ?: "error"}")
                                 }
                                 log = db.all(acc.username)
                                 if (i < t) delay(32_000)
@@ -418,7 +426,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                                 val b = acc.client.getBalance()
                                 acc.balance = b
                                 balanceText = naira(b.money)
-                                canSendText = b.canSend?.let { naira(it) } ?: "—"
+                                canSendText = b.canSend?.let { naira(it) } ?: "-"
                             } catch (_: Exception) {}
                             try { ctx.stopService(Intent(ctx, KeepAliveService::class.java)) } catch (_: Exception) {}
                             TransferNotify.showDone(ctx, acc.username, okCount, t)
