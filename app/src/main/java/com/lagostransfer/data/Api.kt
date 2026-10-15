@@ -6,6 +6,7 @@ import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 data class Account(val username: String, val password: String, val pin: String? = null)
@@ -57,6 +58,29 @@ class LagosClient(private val base: String = "https://lagoslife.app") {
             val u = o.optString("username", null) ?: return@mapNotNull null
             Contact(id, u)
         }
+    }
+
+    suspend fun resolveUsername(username: String): String? = withContext(Dispatchers.IO) {
+        val q = URLEncoder.encode(username.trim(), "UTF-8")
+        val req = Request.Builder().url("$base/api/players?q=$q").get()
+            .header("Accept","application/json")
+            .header("Cookie", cookieHeader()).build()
+        val res = client.newCall(req).execute()
+        if (res.code != 200) return@withContext null
+        val j = JSONObject(res.body!!.string())
+        val arr = j.optJSONArray("players") ?: return@withContext null
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            val u = o.optString("username", "")
+            if (u.equals(username.trim(), ignoreCase = true)) {
+                return@withContext o.optString("id", null)?.takeIf { it.isNotBlank() }
+            }
+        }
+        // fallback: if only one result, return it
+        if (arr.length() == 1) {
+            return@withContext arr.getJSONObject(0).optString("id", null)
+        }
+        null
     }
 
     suspend fun sendMoney(toId: String, amount: Long, note: String?, pin: String?): JSONObject = withContext(Dispatchers.IO) {

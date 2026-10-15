@@ -1,22 +1,28 @@
 package com.lagostransfer
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.lagostransfer.data.*
 import com.lagostransfer.ui.theme.LagosTransferTheme
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.NumberFormat
 import java.util.Locale
@@ -33,8 +39,14 @@ data class SessionAccount(
 )
 
 class MainActivity : ComponentActivity() {
+    private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                permLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
         setContent {
             LagosTransferTheme {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -52,7 +64,7 @@ fun App() {
     val scope = rememberCoroutineScope()
     val snackbarHost = remember { SnackbarHostState() }
     val accounts = remember { mutableStateListOf<SessionAccount>() }
-    var selected by remember { mutableStateOf<String?>(null) } // null = master
+    var selected by remember { mutableStateOf<String?>(null) }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -191,13 +203,15 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
 
 @Composable
 fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
-    var bulk by remember { mutableStateOf("") }
-    var amount by remember { mutableStateOf("") }
+    val ctx = LocalContext.current
+    var recipient by remember { mutableStateOf("") }
+    var amount by remember { mutableStateOf("10000000000") }
+    var times by remember { mutableStateOf("1") }
     var note by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var log by remember { mutableStateOf(listOf<String>()) }
     val scope = rememberCoroutineScope()
-    var balanceText by remember { mutableStateOf(acc.balance?.let { "${naira(it.money)}" } ?: "—") }
+    var balanceText by remember { mutableStateOf(acc.balance?.let { naira(it.money) } ?: "—") }
     var canSendText by remember { mutableStateOf(acc.balance?.canSend?.let { naira(it) } ?: "—") }
 
     fun add(s: String) { log = listOf(s) + log.take(80) }
@@ -232,7 +246,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                                 acc.balance = b
                                 balanceText = naira(b.money)
                                 canSendText = b.canSend?.let { naira(it) } ?: "—"
-                                snacks.showSnackbar("Balance ${balanceText}")
+                                snacks.showSnackbar("Balance $balanceText")
                             } catch (e: Exception) { snacks.showSnackbar("Could not refresh") }
                         }
                     }) { Text("Refresh balance") }
@@ -241,65 +255,96 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
         }
         item {
             Text("Send money", fontWeight = FontWeight.Bold)
-            Text("Each transfer is for this account only. Add one recipient per line, or use Amount + Note below.", style = MaterialTheme.typography.labelSmall)
+            Text("Single recipient · 32s between sends · stacked notifications", style = MaterialTheme.typography.labelSmall)
+        }
+        item {
+            OutlinedTextField(recipient, { recipient = it.trim() }, label = { Text("Recipient username") }, placeholder = { Text("e.g. adewale") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         }
         item {
             OutlinedTextField(
                 value = amount,
                 onValueChange = { v -> amount = v.filter { it.isDigit() }.take(13) },
-                label = { Text("Amount (e.g. 5000)") },
+                label = { Text("Amount") },
                 prefix = { Text("₦") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
             )
-            if (amount.isNotBlank()) {
-                val amt = amount.toLongOrNull() ?: 0
-                if (amt > 0) Text("Will send ${naira(amt)} ${if (amt < 100) "— minimum ₦100" else if (amt > 10_000_000_000) "— max ₦10,000,000,000" else ""}", style = MaterialTheme.typography.labelSmall)
+            val amt = amount.toLongOrNull() ?: 0
+            Text(
+                when {
+                    amt == 0L -> ""
+                    amt < 100 -> "Minimum ₦100"
+                    amt > 10_000_000_000 -> "Maximum ₦10,000,000,000"
+                    else -> "Will send ${naira(amt)} per transfer"
+                },
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
+        item {
+            OutlinedTextField(
+                value = times,
+                onValueChange = { v -> times = v.filter { it.isDigit() }.take(3) },
+                label = { Text("How many times") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            )
+            val t = times.toIntOrNull() ?: 0
+            val amt = amount.toLongOrNull() ?: 0
+            if (t > 0 && amt in 100..10_000_000_000) {
+                Text("Total ${naira(amt * t)} + fees · ${(t - 1) * 32}s total wait", style = MaterialTheme.typography.labelSmall)
             }
         }
         item {
             OutlinedTextField(note, { note = it }, label = { Text("Note (optional)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         }
         item {
-            OutlinedTextField(
-                bulk, { bulk = it },
-                label = { Text("Recipients — one username or ID per line") },
-                placeholder = { Text("ade3cd3578d0433aa2ea\njohn_doe") },
-                modifier = Modifier.fillMaxWidth().height(110.dp)
-            )
-        }
-        item {
+            val amt = amount.toLongOrNull() ?: 0
+            val t = times.toIntOrNull() ?: 0
+            val canSend = amt in 100..10_000_000_000 && t in 1..999 && recipient.isNotBlank()
             Button(
-                enabled = !busy && acc.enabled && bulk.isNotBlank() && (amount.toLongOrNull() ?: 0) in 100..10_000_000_000,
+                enabled = !busy && acc.enabled && canSend,
                 modifier = Modifier.fillMaxWidth(),
                 onClick = {
                     if (!acc.enabled) { scope.launch { snacks.showSnackbar("Transfers paused for @${acc.username}") }; return@Button }
-                    val recipients = bulk.lines().map { it.trim() }.filter { it.isNotBlank() }
-                    val amt = amount.toLongOrNull() ?: return@Button
-                    if (recipients.isEmpty()) return@Button
                     busy = true
                     scope.launch {
+                        snacks.showSnackbar("Resolving @$recipient…")
+                        val toId = try { acc.client.resolveUsername(recipient) } catch (e: Exception) { null }
+                        if (toId == null) {
+                            snacks.showSnackbar("Could not find @$recipient")
+                            add("✗ @$recipient not found")
+                            busy = false
+                            return@launch
+                        }
+                        TransferNotify.ensureChannel(ctx)
                         var okCount = 0
-                        for (to in recipients) {
+                        for (i in 1..t) {
+                            if (!acc.enabled) { add("⏸ paused at $i/$t"); break }
+                            TransferNotify.showProgress(ctx, acc.username, i, t, amt, "Sending ${i}/${t}")
+                            snacks.showSnackbar("Sending ${i}/${t} → @$recipient ${naira(amt)}")
                             try {
-                                val r = acc.client.sendMoney(to, amt, note.ifBlank { null }, acc.pin)
+                                val r = acc.client.sendMoney(toId, amt, note.ifBlank { null }, acc.pin)
                                 if (r.optBoolean("ok", false)) {
                                     okCount++
-                                    val fee = r.optLong("fee", 0)
-                                    add("✓ ${naira(amt)} → $to ${if (fee>0) "(fee ${naira(fee)})" else ""}")
+                                    add("✓ ${i}/${t} ${naira(amt)} → @$recipient")
                                 } else {
                                     val msg = r.optString("error").ifBlank { "Could not send" }
                                     val friendly = when {
-                                        msg.contains("fund", true) -> "Not enough funds (needs ${naira(amt)} + fee)"
-                                        msg.contains("limit", true) -> "Daily limit reached — try tomorrow"
-                                        msg.contains("frozen", true) -> "Account frozen — try later"
-                                        msg.contains("pin", true) -> "PIN required or wrong"
+                                        msg.contains("fund", true) -> "Not enough funds"
+                                        msg.contains("limit", true) -> "Daily limit reached"
+                                        msg.contains("frozen", true) -> "Account frozen"
+                                        msg.contains("pin", true) -> "PIN wrong"
                                         else -> msg.take(80)
                                     }
-                                    add("✗ $to — $friendly")
+                                    add("✗ ${i}/${t} — $friendly")
+                                    TransferNotify.showError(ctx, acc.username, friendly)
                                 }
-                            } catch (e: Exception) { add("✗ $to — ${e.message?.take(60) ?: "error"}") }
+                            } catch (e: Exception) {
+                                add("✗ ${i}/${t} — ${e.message?.take(60) ?: "error"}")
+                            }
+                            if (i < t) delay(32_000)
                         }
                         try {
                             val b = acc.client.getBalance()
@@ -307,11 +352,15 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                             balanceText = naira(b.money)
                             canSendText = b.canSend?.let { naira(it) } ?: "—"
                         } catch (_: Exception) {}
-                        snacks.showSnackbar("Done — $okCount of ${recipients.size} sent from @${acc.username}")
+                        TransferNotify.showDone(ctx, acc.username, okCount, t)
+                        snacks.showSnackbar("Done — $okCount/$t sent from @${acc.username} to @$recipient")
                         busy = false
                     }
                 }
-            ) { Text(if (busy) "Sending…" else if (!acc.enabled) "Paused" else "Send ${bulk.lines().count { it.isNotBlank() }} transfer(s)") }
+            ) {
+                val tInt = times.toIntOrNull() ?: 0
+                Text(if (busy) "Sending… 32s gap" else if (!acc.enabled) "Paused" else "Send ${if (tInt>0) "${tInt}× " else ""}${if (amt>0) naira(amt) else ""} to @$recipient".trim())
+            }
         }
         item { Divider() }
         item { Text("Activity", fontWeight = FontWeight.SemiBold) }
