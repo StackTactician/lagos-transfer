@@ -364,6 +364,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                     modifier = Modifier.weight(1f),
                     onClick = {
                         if (!acc.enabled) return@Button
+                        log = emptyList()
                         busy = true
                         val job = scope.launch {
                             val toId = try { acc.client.resolveUsername(recipient) } catch (e: Exception) { null }
