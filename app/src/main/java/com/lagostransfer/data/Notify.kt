@@ -36,7 +36,7 @@ object TransferNotify {
             .build()
         val summary = NotificationCompat.Builder(ctx, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
-            .setContentTitle("Lagos Transfer")
+            .setContentTitle("Eko Aza")
             .setContentText("$current/$total active")
             .setGroup(GROUP)
             .setGroupSummary(true)

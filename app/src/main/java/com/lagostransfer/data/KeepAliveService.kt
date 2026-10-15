@@ -18,7 +18,7 @@ class KeepAliveService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val n = NotificationCompat.Builder(this, "transfers")
             .setSmallIcon(android.R.drawable.stat_sys_upload)
-            .setContentTitle("Lagos Transfer active")
+            .setContentTitle("Eko Aza active")
             .setContentText("Keeping transfers alive in background")
             .setOngoing(true)
             .build()
