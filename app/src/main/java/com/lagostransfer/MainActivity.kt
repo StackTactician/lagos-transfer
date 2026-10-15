@@ -184,7 +184,7 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
                 ElevatedCard(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(if (isUpToDate) "App is up to date" else "Update available - ${updateInfo!!.tag}", fontWeight = FontWeight.Bold)
-                        Text(if (isUpToDate) "You are on the latest version." else "Tap to download and install. Auto-update from GitHub latest.", style = MaterialTheme.typography.bodySmall)
+                        Text(if (isUpToDate) "You are on the latest version." else "Tap to download and install the latest version.", style = MaterialTheme.typography.bodySmall)
                         if (!isUpToDate) {
                             Button(enabled = !updating, onClick = {
                                 updating = true
