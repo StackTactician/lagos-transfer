@@ -31,7 +31,8 @@ import kotlinx.coroutines.launch
 import java.text.NumberFormat
 import java.util.Locale
 
-private fun naira(v: Long): String = "₦" + NumberFormat.getNumberInstance(Locale("en", "NG")).format(v)
+private val nairaFmt by lazy { NumberFormat.getNumberInstance(Locale("en", "NG")) }
+private fun naira(v: Long): String = "₦" + nairaFmt.format(v)
 private fun nairaAny(v: Long): String = naira(v)
 
 data class SessionAccount(
@@ -154,7 +155,14 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
     }
 
     var keepAliveOk by remember { mutableStateOf(KeepAlive.isIgnoringBattery(ctx)) }
-    LaunchedEffect(Unit) { while (true) { keepAliveOk = KeepAlive.isIgnoringBattery(ctx); delay(2000) } }
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) keepAliveOk = KeepAlive.isIgnoringBattery(ctx)
+        }
+        lifecycle.addObserver(obs)
+        onDispose { lifecycle.removeObserver(obs) }
+    }
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         if (!keepAliveOk) {
             item {

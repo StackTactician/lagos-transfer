@@ -13,7 +13,7 @@ class KeepAliveService : Service() {
         super.onCreate()
         TransferNotify.ensureChannel(this)
         val pm = getSystemService(POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LagosTransfer::keep").apply { acquire(10*60*1000L) }
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LagosTransfer::keep").apply { acquire() }
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val n = NotificationCompat.Builder(this, "transfers")
