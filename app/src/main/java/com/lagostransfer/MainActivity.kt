@@ -84,6 +84,7 @@ fun App() {
     val snackbarHost = remember { SnackbarHostState() }
     val accounts = remember { mutableStateListOf<SessionAccount>() }
     var selected by remember { mutableStateOf<String?>(null) }
+    var isSyncing by remember { mutableStateOf(true) }
     val ctxApp = LocalContext.current
     LaunchedEffect(Unit) {
         try {
@@ -95,7 +96,7 @@ fun App() {
                 try { acc.balance = acc.client.getBalance() } catch (e: Exception) { /* silent */ }
                 accounts.add(acc)
             }
-        } catch (e: Exception) { /* silent */ }
+        } catch (e: Exception) { /* silent */ } finally { isSyncing = false }
     } // null=master, "history"=ledger
 
     ModalNavigationDrawer(
@@ -154,6 +155,11 @@ fun App() {
                         val acc = accounts.find { it.username == selected }
                         if (acc == null) MasterPage(accounts, snackbarHost, onSelect = { selected = it })
                         else AccountPage(acc, snackbarHost)
+                    }
+                }
+                if (isSyncing) {
+                    Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                        CircularProgressIndicator()
                     }
                 }
             }
