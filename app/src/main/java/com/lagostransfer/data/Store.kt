@@ -9,13 +9,17 @@ import androidx.security.crypto.MasterKey
 import java.security.MessageDigest
 
 object SecureStore {
+    @Volatile private var cachedPrefs: SharedPreferences? = null
     private fun prefs(ctx: Context): SharedPreferences {
+        cachedPrefs?.let { return it }
         val mk = MasterKey.Builder(ctx).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
-        return EncryptedSharedPreferences.create(
+        val p = EncryptedSharedPreferences.create(
             ctx, "secure_accounts", mk,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
         )
+        cachedPrefs = p
+        return p
     }
     fun saveAccount(ctx: Context, username: String, password: String, pin: String?) {
         prefs(ctx).edit()
