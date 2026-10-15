@@ -12,7 +12,7 @@ object SecureStore {
     @Volatile private var cachedPrefs: SharedPreferences? = null
     private fun prefs(ctx: Context): SharedPreferences {
         cachedPrefs?.let { return it }
-        val mk = MasterKey.Builder(ctx).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
+        val mk = MasterKey.Builder(ctx).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).setRequestStrongBoxBacked(false).build()
         val p = EncryptedSharedPreferences.create(
             ctx, "secure_accounts", mk,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,

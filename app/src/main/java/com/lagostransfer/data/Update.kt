@@ -39,7 +39,7 @@ object UpdateChecker {
             val pkg = pm.getPackageInfo(ctx.packageName, 0)
             val installTime = pkg.lastUpdateTime
             val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
-            val remoteTime = try { sdf.parse(remoteUpdatedAt)?.time ?: 0L } catch (_: Exception) { java.time.Instant.parse(remoteUpdatedAt).toEpochMilli() }
+            val remoteTime = try { sdf.parse(remoteUpdatedAt)?.time ?: 0L } catch (_: Exception) { 0L }
             installTime >= remoteTime - 60000
         } catch (_: Exception) { false }
     }
