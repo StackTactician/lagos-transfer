@@ -20,7 +20,7 @@ object SecureStore {
     fun saveAccount(ctx: Context, username: String, password: String, pin: String?) {
         prefs(ctx).edit()
             .putString("u_$username", username)
-            .putString("p_$username", password) // encrypted at rest via Tink
+            .putString("p_$username", password)
             .putString("pin_$username", pin ?: "")
             .apply()
     }
@@ -41,6 +41,8 @@ object SecureStore {
         return d.joinToString("") { "%02x".format(it) }
     }
 }
+
+data class LogEntry(val ts: Long, val account: String, val recipient: String, val amount: Long, val status: String, val transferred: Int, val remaining: Int, val amountLeft: Long)
 
 class LogDb(ctx: Context) : SQLiteOpenHelper(ctx, "transfer_logs.db", null, 1) {
     override fun onCreate(db: SQLiteDatabase) {
@@ -63,7 +65,28 @@ class LogDb(ctx: Context) : SQLiteOpenHelper(ctx, "transfer_logs.db", null, 1) {
             val tr = c.getInt(4)
             val rem = c.getInt(5)
             val left = c.getLong(6)
-            out.add("$st ₦$amt → @$rec · $tr done, $rem left, ₦$left left")
+            out.add("$st ₦$amt → @$rec · $tr sent, $rem left, ₦$left left")
+        }
+        c.close(); return out
+    }
+    fun history(search: String?, filterStatus: String?): List<LogEntry> {
+        val where = mutableListOf<String>()
+        val args = mutableListOf<String>()
+        if (!search.isNullOrBlank()) {
+            where.add("(recipient LIKE ? OR account LIKE ?)")
+            args.add("%$search%"); args.add("%$search%")
+        }
+        if (!filterStatus.isNullOrBlank() && filterStatus != "All") {
+            where.add("status = ?")
+            args.add(filterStatus)
+        }
+        val sql = "SELECT ts,account,recipient,amount,status,transferred,remaining,amount_left FROM logs" +
+                (if (where.isNotEmpty()) " WHERE " + where.joinToString(" AND ") else "") +
+                " ORDER BY id DESC LIMIT 200"
+        val c = readableDatabase.rawQuery(sql, args.toTypedArray())
+        val out = mutableListOf<LogEntry>()
+        while (c.moveToNext()) {
+            out.add(LogEntry(c.getLong(0), c.getString(1), c.getString(2), c.getLong(3), c.getString(4), c.getInt(5), c.getInt(6), c.getLong(7)))
         }
         c.close(); return out
     }
