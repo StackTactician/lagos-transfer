@@ -19,9 +19,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import android.content.Intent
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.lagostransfer.data.*
+import com.lagostransfer.data.KeepAlive
 import com.lagostransfer.ui.theme.LagosTransferTheme
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -146,7 +148,19 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
         try { updateInfo = UpdateChecker.latest() } catch (_: Exception) {}
     }
 
+    val keepAliveOk = KeepAlive.isIgnoringBattery(ctx)
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        if (!keepAliveOk) {
+            item {
+                ElevatedCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Keep alive in background", fontWeight = FontWeight.Bold)
+                        Text("Long transfers (32s × many) die if system kills app. Allow to run in background — strongest available.", style = MaterialTheme.typography.bodySmall)
+                        Button(onClick = { KeepAlive.requestIgnoreBattery(ctx) }, modifier = Modifier.fillMaxWidth()) { Text("Allow background — persist powerfully") }
+                    }
+                }
+            }
+        }
         if (updateInfo != null) {
             item {
                 ElevatedCard(Modifier.fillMaxWidth()) {
@@ -362,6 +376,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                                 return@launch
                             }
                             TransferNotify.ensureChannel(ctx)
+                            try { ContextCompat.startForegroundService(ctx, Intent(ctx, KeepAliveService::class.java)) } catch (_: Exception) {}
                             var okCount = 0
                             for (i in 1..t) {
                                 if (!acc.enabled) { add("⏸ paused at $i/$t"); break }
@@ -404,6 +419,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                                 balanceText = naira(b.money)
                                 canSendText = b.canSend?.let { naira(it) } ?: "—"
                             } catch (_: Exception) {}
+                            try { ctx.stopService(Intent(ctx, KeepAliveService::class.java)) } catch (_: Exception) {}
                             TransferNotify.showDone(ctx, acc.username, okCount, t)
                             busy = false
                         }
