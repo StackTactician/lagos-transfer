@@ -30,6 +30,7 @@ import java.text.NumberFormat
 import java.util.Locale
 
 private fun naira(v: Long): String = "₦" + NumberFormat.getNumberInstance(Locale("en", "NG")).format(v)
+private fun nairaAny(v: Long): String = naira(v)
 
 data class SessionAccount(
     val username: String,
@@ -67,7 +68,7 @@ fun App() {
     val scope = rememberCoroutineScope()
     val snackbarHost = remember { SnackbarHostState() }
     val accounts = remember { mutableStateListOf<SessionAccount>() }
-    var selected by remember { mutableStateOf<String?>(null) }
+    var selected by remember { mutableStateOf<String?>(null) } // null=master, "history"=ledger
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -81,6 +82,11 @@ fun App() {
                     label = { Text("Master — Accounts") },
                     selected = selected == null,
                     onClick = { selected = null; scope.launch { drawerState.close() } }
+                )
+                NavigationDrawerItem(
+                    label = { Text("History — Ledger") },
+                    selected = selected == "history",
+                    onClick = { selected = "history"; scope.launch { drawerState.close() } }
                 )
                 Divider(Modifier.padding(vertical = 8.dp))
                 if (accounts.isEmpty()) {
@@ -100,7 +106,7 @@ fun App() {
         Scaffold(
             topBar = {
                 CenterAlignedTopAppBar(
-                    title = { Text(if (selected == null) "Master" else "@$selected", fontWeight = FontWeight.SemiBold) },
+                    title = { Text(when (selected) { null -> "Master"; "history" -> "Ledger"; else -> "@$selected" }, fontWeight = FontWeight.SemiBold) },
                     navigationIcon = {
                         IconButton(onClick = { scope.launch { drawerState.open() } }) {
                             Text("☰", style = MaterialTheme.typography.titleLarge)
@@ -111,12 +117,14 @@ fun App() {
             snackbarHost = { SnackbarHost(snackbarHost) }
         ) { pad ->
             Box(Modifier.padding(pad)) {
-                if (selected == null) {
-                    MasterPage(accounts, snackbarHost, onSelect = { selected = it })
-                } else {
-                    val acc = accounts.find { it.username == selected }
-                    if (acc == null) MasterPage(accounts, snackbarHost, onSelect = { selected = it })
-                    else AccountPage(acc, snackbarHost)
+                when (selected) {
+                    null -> MasterPage(accounts, snackbarHost, onSelect = { selected = it })
+                    "history" -> HistoryPage()
+                    else -> {
+                        val acc = accounts.find { it.username == selected }
+                        if (acc == null) MasterPage(accounts, snackbarHost, onSelect = { selected = it })
+                        else AccountPage(acc, snackbarHost)
+                    }
                 }
             }
         }
@@ -130,9 +138,35 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
     var password by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    var updateInfo by remember { mutableStateOf<UpdateChecker.Info?>(null) }
+    var updating by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
+    LaunchedEffect(Unit) {
+        try { updateInfo = UpdateChecker.latest() } catch (_: Exception) {}
+    }
+
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        if (updateInfo != null) {
+            item {
+                ElevatedCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Update available — ${updateInfo!!.tag}", fontWeight = FontWeight.Bold)
+                        Text("Tap to download and install. Auto-update from GitHub latest.", style = MaterialTheme.typography.bodySmall)
+                        Button(enabled = !updating, onClick = {
+                            updating = true
+                            scope.launch {
+                                try {
+                                    val file = UpdateChecker.download(ctx, updateInfo!!.url)
+                                    if (file != null) UpdateChecker.install(ctx, file) else snacks.showSnackbar("Download failed")
+                                } catch (e: Exception) { snacks.showSnackbar("Update failed: ${e.message}") }
+                                updating = false
+                            }
+                        }) { Text(if (updating) "Downloading…" else "Update now") }
+                    }
+                }
+            }
+        }
         item {
             Text("Add account", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
@@ -254,8 +288,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                                 acc.balance = b
                                 balanceText = naira(b.money)
                                 canSendText = b.canSend?.let { naira(it) } ?: "—"
-                                snacks.showSnackbar("Balance $balanceText")
-                            } catch (e: Exception) { snacks.showSnackbar("Could not refresh") }
+                            } catch (e: Exception) { }
                         }
                     }) { Text("Refresh balance") }
                 }
@@ -316,16 +349,15 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                     enabled = !busy && acc.enabled && canSend,
                     modifier = Modifier.weight(1f),
                     onClick = {
-                        if (!acc.enabled) { scope.launch { snacks.showSnackbar("Transfers paused for @${acc.username}") }; return@Button }
+                        if (!acc.enabled) return@Button
                         busy = true
                         val job = scope.launch {
-                            snacks.showSnackbar("Resolving @$recipient…")
                             val toId = try { acc.client.resolveUsername(recipient) } catch (e: Exception) { null }
                             if (toId == null) {
-                                snacks.showSnackbar("Could not find @$recipient")
                                 val rem = t
                                 db.insert(acc.username, recipient, amt, "not_found", 0, rem, amt * rem)
-                                add("✗ @$recipient not found · 0/${t} · ${naira(amt * rem)} left")
+                                add("✗ @$recipient not found · 0/$t · ${naira(amt * rem)} left")
+                                log = db.all(acc.username)
                                 busy = false
                                 return@launch
                             }
@@ -334,7 +366,6 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                             for (i in 1..t) {
                                 if (!acc.enabled) { add("⏸ paused at $i/$t"); break }
                                 TransferNotify.showProgress(ctx, acc.username, i, t, amt, "Sending $i/$t to @$recipient")
-                                snacks.showSnackbar("Sending $i/$t → @$recipient ${naira(amt)}")
                                 var status = "fail"
                                 try {
                                     val r = acc.client.sendMoney(toId, amt, note.ifBlank { null }, acc.pin)
@@ -374,7 +405,6 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                                 canSendText = b.canSend?.let { naira(it) } ?: "—"
                             } catch (_: Exception) {}
                             TransferNotify.showDone(ctx, acc.username, okCount, t)
-                            snacks.showSnackbar("Done — $okCount/$t sent from @${acc.username} to @$recipient · ${naira(amt * (t - okCount))} left")
                             busy = false
                         }
                         currentJob = job
@@ -385,12 +415,50 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                     Text(if (busy) "Sending… 32s gap" else if (!acc.enabled) "Paused" else "Send ${if (tInt>0) "${tInt}× " else ""}${if (amt>0) naira(amt) else ""} to @$recipient".trim())
                 }
                 if (busy) {
-                    OutlinedButton(onClick = { currentJob?.cancel(); busy = false; add("■ Stopped by user"); scope.launch { snacks.showSnackbar("Stopped") } }) { Text("Stop") }
+                    OutlinedButton(onClick = { currentJob?.cancel(); busy = false; add("■ Stopped by user") }) { Text("Stop") }
                 }
             }
         }
         item { Divider() }
-        item { Text("Activity — ${log.size} saved (SQLite, hashed recipients)", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelSmall) }
+        item { Text("Activity", fontWeight = FontWeight.SemiBold) }
         items(log) { Text(it, style = MaterialTheme.typography.bodySmall) }
+    }
+}
+
+@Composable
+fun HistoryPage() {
+    val ctx = LocalContext.current
+    val db = remember { LogDb(ctx) }
+    var search by remember { mutableStateOf("") }
+    var filter by remember { mutableStateOf("All") }
+    var entries by remember { mutableStateOf(listOf<LogEntry>()) }
+    val scope = rememberCoroutineScope()
+    fun refresh() { entries = db.history(search.ifBlank { null }, filter) }
+    LaunchedEffect(Unit) { refresh() }
+    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("Transfer History", fontWeight = FontWeight.Black, style = MaterialTheme.typography.titleMedium)
+        Text("All transfers saved on this phone. Search by account or recipient.", style = MaterialTheme.typography.labelSmall)
+        OutlinedTextField(search, { search = it }, label = { Text("Search") }, placeholder = { Text("username, account…") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("All","sent","not_found","error").forEach { f ->
+                FilterChip(selected = filter == f, onClick = { filter = f; refresh() }, label = { Text(f) })
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { refresh() }) { Text("Search") }
+            TextButton(onClick = { search = ""; filter = "All"; refresh() }) { Text("Clear") }
+        }
+        Divider()
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
+            if (entries.isEmpty()) item { Text("No transfers yet.", style = MaterialTheme.typography.bodySmall) }
+            items(entries) { e ->
+                ElevatedCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("@${e.account} → @${e.recipient} · ${nairaAny(e.amount)} · ${e.status}", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodySmall)
+                        Text("${e.transferred} sent, ${e.remaining} left, ${nairaAny(e.amountLeft)} left · ${java.text.SimpleDateFormat("MMM dd HH:mm", Locale.getDefault()).format(java.util.Date(e.ts))}", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
     }
 }
