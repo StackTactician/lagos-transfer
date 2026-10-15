@@ -36,6 +36,16 @@ import java.util.Locale
 private val nairaFmt by lazy { NumberFormat.getNumberInstance(Locale("en", "NG")) }
 private fun naira(v: Long): String = "₦" + nairaFmt.format(v)
 private fun nairaAny(v: Long): String = naira(v)
+private fun friendly(e: Exception): String {
+    val m = e.message ?: ""
+    return when {
+        "Unable to resolve host" in m || "No address" in m -> "No internet - check connection"
+        "timeout" in m.lower() -> "Network timeout - try again"
+        "401" in m || "Unauthorized" in m -> "Wrong password or session expired"
+        "429" in m -> "Too many tries - wait a bit"
+        else -> m.take(80).ifBlank { "Something went wrong" }
+    }
+}
 
 data class SessionAccount(
     val username: String,
@@ -81,11 +91,11 @@ fun App() {
             for ((u, pp, pin) in saved) {
                 if (accounts.any { it.username == u }) continue
                 val acc = SessionAccount(u, pp, pin, LagosClient())
-                try { acc.client.login(com.lagostransfer.data.Account(u, pp, pin)) } catch (_: Exception) {}
-                try { acc.balance = acc.client.getBalance() } catch (_: Exception) {}
+                try { acc.client.login(com.lagostransfer.data.Account(u, pp, pin)) } catch (e: Exception) { /* silent */ }
+                try { acc.balance = acc.client.getBalance() } catch (e: Exception) { /* silent */ }
                 accounts.add(acc)
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) { /* silent */ }
     } // null=master, "history"=ledger
 
     ModalNavigationDrawer(
@@ -168,7 +178,7 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
             val info = UpdateChecker.latest()
             updateInfo = info
             isUpToDate = info?.let { UpdateChecker.isUpToDate(ctx, it.updatedAt) } ?: false
-        } catch (_: Exception) {}
+        } catch (e: Exception) { /* silent */ }
     }
 
     var keepAliveOk by remember { mutableStateOf(KeepAlive.isIgnoringBattery(ctx)) }
@@ -265,7 +275,7 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
                         busy = false
                     }
                 }
-            ) { Text(if (busy) "Logging in…" else "Log in & add") }
+            ) { if (busy) CircularProgressIndicator(modifier = androidx.compose.ui.Modifier.size(16.dp), strokeWidth = 2.dp) else Text("Log in & add") }
         }
         item { Divider() }
         item { Text("Accounts (${accounts.size})", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold) }
@@ -290,7 +300,7 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
                                     try {
                                         acc.balance = acc.client.getBalance()
                                         snacks.showSnackbar("@${acc.username} - ${naira(acc.balance!!.money)}")
-                                    } catch (e: Exception) { snacks.showSnackbar("Could not refresh @${acc.username}") }
+                                    } catch (e: Exception) { snacks.showSnackbar(friendly(e as Exception)) }
                                 }
                             }) { Text("Refresh") }
                             TextButton(onClick = { SecureStore.removeAccount(ctx, acc.username); accounts.remove(acc) }) { Text("Log out") }
@@ -306,6 +316,7 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
 fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
     val ctx = LocalContext.current
     val db = remember { LogDb(ctx) }
+    var refreshing by remember { mutableStateOf(false) }
     var recipient by remember { mutableStateOf("") }
     var amount by remember { mutableStateOf("10000000000") }
     var times by remember { mutableStateOf("1") }
@@ -325,7 +336,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
             acc.balance = b
             balanceText = naira(b.money)
             canSendText = b.canSend?.let { naira(it) } ?: "-"
-        } catch (_: Exception) {}
+        } catch (e: Exception) { /* silent */ }
         log = db.all(acc.username)
     }
 
@@ -343,8 +354,9 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                         Switch(checked = acc.enabled, onCheckedChange = { acc.enabled = it })
                         Text(if (acc.enabled) "Enabled" else "Paused", fontWeight = FontWeight.SemiBold)
                     }
-                    OutlinedButton(onClick = {
+                    OutlinedButton(enabled = !refreshing, onClick = {
                         scope.launch {
+                            refreshing = true
                             try {
                                 val b = acc.client.getBalance()
                                 acc.balance = b
@@ -415,7 +427,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                         log = emptyList()
                         busy = true
                         val job = scope.launch {
-                            val toId = try { acc.client.resolveUsername(recipient) } catch (e: Exception) { null }
+                            val toId = try { acc.client.resolveUsername(recipient) } catch (e: Exception) { add("✗ " + friendly(e as Exception)); null }
                             if (toId == null) {
                                 val rem = t
                                 db.insert(acc.username, recipient, amt, "not_found", 0, rem, amt * rem)
@@ -425,7 +437,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                                 return@launch
                             }
                             TransferNotify.ensureChannel(ctx)
-                            try { ContextCompat.startForegroundService(ctx, Intent(ctx, KeepAliveService::class.java)) } catch (_: Exception) {}
+                            try { ContextCompat.startForegroundService(ctx, Intent(ctx, KeepAliveService::class.java)) } catch (e: Exception) { /* silent */ }
                             var okCount = 0
                             for (i in 1..t) {
                                 if (!acc.enabled) { add("⏸ paused at $i/$t"); break }
@@ -467,8 +479,8 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                                 acc.balance = b
                                 balanceText = naira(b.money)
                                 canSendText = b.canSend?.let { naira(it) } ?: "-"
-                            } catch (_: Exception) {}
-                            try { ctx.stopService(Intent(ctx, KeepAliveService::class.java)) } catch (_: Exception) {}
+                            } catch (e: Exception) { /* silent */ }
+                            try { ctx.stopService(Intent(ctx, KeepAliveService::class.java)) } catch (e: Exception) { /* silent */ }
                             TransferNotify.showDone(ctx, acc.username, okCount, t)
                             busy = false
                         }
@@ -497,8 +509,9 @@ fun HistoryPage() {
     var search by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf("All") }
     var entries by remember { mutableStateOf(listOf<LogEntry>()) }
+    var loading by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    fun refresh() { entries = db.history(search.ifBlank { null }, filter) }
+    fun refresh() { loading = true; try { entries = db.history(search.ifBlank { null }, filter) } catch (e: Exception) { entries = emptyList() } finally { loading = false } }
     LaunchedEffect(Unit) { refresh() }
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Transfer History", fontWeight = FontWeight.Black, style = MaterialTheme.typography.titleMedium)
@@ -510,9 +523,10 @@ fun HistoryPage() {
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { refresh() }) { Text("Search") }
+            OutlinedButton(onClick = { refresh() }) { if (loading) CircularProgressIndicator(modifier = androidx.compose.ui.Modifier.size(16.dp), strokeWidth = 2.dp) else Text("Search") }
             TextButton(onClick = { search = ""; filter = "All"; refresh() }) { Text("Clear") }
         }
+        if (loading) { LinearProgressIndicator(modifier = androidx.compose.ui.Modifier.fillMaxWidth().height(4.dp)) }
         Divider()
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
             if (entries.isEmpty()) item { Text("No transfers yet.", style = MaterialTheme.typography.bodySmall) }
