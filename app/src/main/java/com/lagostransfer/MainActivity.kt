@@ -40,7 +40,7 @@ private fun friendly(e: Exception): String {
     val m = e.message ?: ""
     return when {
         "Unable to resolve host" in m || "No address" in m -> "No internet - check connection"
-        "timeout" in m.lower() -> "Network timeout - try again"
+        "timeout" in m.lowercase() -> "Network timeout - try again"
         "401" in m || "Unauthorized" in m -> "Wrong password or session expired"
         "429" in m -> "Too many tries - wait a bit"
         else -> m.take(80).ifBlank { "Something went wrong" }
