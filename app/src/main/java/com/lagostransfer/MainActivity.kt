@@ -34,8 +34,8 @@ import kotlinx.coroutines.withContext
 import java.text.NumberFormat
 import java.util.Locale
 
-private val nairaFmt by lazy { NumberFormat.getNumberInstance(Locale("en", "NG")) }
-private fun naira(v: Long): String = "₦" + nairaFmt.format(v)
+val nairaFmt by lazy { NumberFormat.getNumberInstance(Locale("en", "NG")) }
+fun naira(v: Long): String = "₦" + nairaFmt.format(v)
 
 private fun friendly(e: Exception): String {
     val m = e.message ?: ""
