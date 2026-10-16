@@ -23,13 +23,19 @@ class LagosClient(
     private val base: String = "https://lagoslife.app"
 ) {
     private val jar = mutableMapOf<String, String>()
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .writeTimeout(15, TimeUnit.SECONDS)
-        .callTimeout(25, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(true)
-        .build()
+    private val client = shared
+    companion object {
+        private val shared: OkHttpClient by lazy {
+            OkHttpClient.Builder()
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(15, TimeUnit.SECONDS)
+                .writeTimeout(15, TimeUnit.SECONDS)
+                .callTimeout(25, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(true)
+                .connectionPool(ConnectionPool(8, 5, TimeUnit.MINUTES))
+                .build()
+        }
+    }
 
     var onAuthLost: (() -> Unit)? = null
     private var loggedOut = false

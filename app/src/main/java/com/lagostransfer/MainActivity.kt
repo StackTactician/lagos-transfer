@@ -372,7 +372,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
         }
         balanceText = acc.balance?.let { naira(it.money) } ?: "-"
         canSendText = acc.balance?.canSend?.let { naira(it) } ?: "-"
-        log = db.all(acc.username)
+        log = withContext(Dispatchers.IO) { db.all(acc.username) }
     }
 
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -398,7 +398,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                                 acc.balance = b
                                 balanceText = naira(b.money)
                                 canSendText = b.canSend?.let { naira(it) } ?: "-"
-                                SecureStore.saveCookies(ctx, acc.username, acc.client.exportCookies())
+                                withContext(Dispatchers.IO) { SecureStore.saveCookies(ctx, acc.username, acc.client.exportCookies()) }
                             } catch (e: Exception) { snacks.showSnackbar(friendly(e as Exception)) } finally { refreshing = false }
                         }
                     }) { if (refreshing) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp) else Text("Refresh balance") }
@@ -488,13 +488,26 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                                 val toId = try { acc.client.resolveUsername(recipient) } catch (_: Exception) { null }
                                 if (toId == null) {
                                     add("No user @$recipient - check spelling")
-                                    db.insert(acc.username, recipient, amt, "not_found", 0, t, amt.toLong() * t)
+                                    withContext(Dispatchers.IO) { db.insert(acc.username, recipient, amt, "not_found", 0, t, amt.toLong() * t) }
                                     snacks.showSnackbar("No user @$recipient")
                                     return@launch
                                 }
                                 TransferNotify.ensureChannel(ctx)
                                 var okCount = 0
                                 var netFails = 0
+                                val startBalance = try { acc.client.getBalance() } catch (_: Exception) { null }
+                                if (startBalance != null) {
+                                    acc.balance = startBalance
+                                    balanceText = naira(startBalance.money)
+                                    canSendText = startBalance.canSend?.let { naira(it) } ?: "-"
+                                }
+                                if (startBalance != null && startBalance.money < amt) {
+                                    withContext(Dispatchers.IO) { db.insert(acc.username, recipient, amt, "insufficient", 0, t, amt.toLong() * t) }
+                                    log = withContext(Dispatchers.IO) { db.all(acc.username) }
+                                    add("Not enough funds - have ${naira(startBalance.money)}")
+                                    TransferNotify.showError(ctx, acc.username, "Not enough funds")
+                                    return@launch
+                                }
                                 for (i in 1..t) {
                                     if (stopFlag.get()) { add("Stopped at $i/$t"); break }
                                     if (!acc.enabled) { add("Paused at $i/$t"); break }
@@ -502,19 +515,13 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                                     add("Sending $i/$t ${naira(amt)} to @$recipient")
                                     TransferNotify.showProgress(ctx, acc.username, i, t, amt, "Sending $i/$t")
 
-                                    var curBalance = try { acc.client.getBalance() } catch (_: Exception) { null }
-                                    if (curBalance != null) {
-                                        balanceText = naira(curBalance.money)
-                                        canSendText = curBalance.canSend?.let { naira(it) } ?: "-"
-                                        acc.balance = curBalance
-                                        SecureStore.saveCookies(ctx, acc.username, acc.client.exportCookies())
-                                        if (curBalance.money < amt) {
-                                            val left = t - i + 1
-                                            db.insert(acc.username, recipient, amt, "insufficient", i - 1, left, amt.toLong() * left)
-                                            add("Not enough funds - have ${naira(curBalance.money)}")
-                                            TransferNotify.showError(ctx, acc.username, "Not enough funds")
-                                            break
-                                        }
+                                    if (startBalance != null && startBalance!!.money < amt) {
+                                        val left = t - i + 1
+                                        withContext(Dispatchers.IO) { db.insert(acc.username, recipient, amt, "insufficient", i - 1, left, amt.toLong() * left) }
+                                        log = withContext(Dispatchers.IO) { db.all(acc.username) }
+                                        add("Not enough funds - have ${naira(startBalance!!.money)}")
+                                        TransferNotify.showError(ctx, acc.username, "Not enough funds")
+                                        break
                                     }
 
                                     var result: org.json.JSONObject? = null
@@ -549,7 +556,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                                     if (errMsg != null) {
                                         netFails++
                                         val left = t - i
-                                        db.insert(acc.username, recipient, amt, "failed", i - 1, left + 1, amt.toLong() * (left + 1))
+                                        withContext(Dispatchers.IO) { db.insert(acc.username, recipient, amt, "failed", i - 1, left + 1, amt.toLong() * (left + 1)) }
                                         add("Failed $i/$t after $maxRetry retries - $errMsg")
                                         TransferNotify.showError(ctx, acc.username, errMsg)
                                         if (netFails >= 3) {
@@ -561,7 +568,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                                         if (result.optBoolean("ok", false)) {
                                             okCount++
                                             val left = t - i
-                                            db.insert(acc.username, recipient, amt, "sent", i, left, amt.toLong() * left)
+                                            withContext(Dispatchers.IO) { db.insert(acc.username, recipient, amt, "sent", i, left, amt.toLong() * left) }
                                             add("Sent $i/$t ${naira(amt)} to @$recipient - $left left")
                                             netFails = 0
                                         } else {
@@ -574,13 +581,13 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
                                                 else -> msg.take(80)
                                             }
                                             val left = t - i
-                                            db.insert(acc.username, recipient, amt, nice, i - 1, left + 1, amt.toLong() * (left + 1))
+                                            withContext(Dispatchers.IO) { db.insert(acc.username, recipient, amt, nice, i - 1, left + 1, amt.toLong() * (left + 1)) }
                                             add("Failed $i/$t - $nice")
                                             TransferNotify.showError(ctx, acc.username, nice)
                                             if (msg.contains("limit", true) || msg.contains("frozen", true)) break
                                         }
                                     }
-                                    log = db.all(acc.username)
+                                    log = withContext(Dispatchers.IO) { db.all(acc.username) }
                                     if (i < t && !stopFlag.get()) {
                                         add("Waiting 32s - next $i/$t done")
                                         delay(32_000)
