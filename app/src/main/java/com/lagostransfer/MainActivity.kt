@@ -80,34 +80,15 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun App() {
+    val vm: AppViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val snackbarHost = remember { SnackbarHostState() }
-    val accounts = remember { mutableStateListOf<SessionAccount>() }
+    val accounts = vm.accounts
     var selected by remember { mutableStateOf<String?>(null) }
-    var isSyncing by remember { mutableStateOf(true) }
+    val isSyncing = vm.isSyncing
     val ctxApp = LocalContext.current
-
-    LaunchedEffect(Unit) {
-        try {
-            val saved = SecureStore.loadAccounts(ctxApp)
-            val deferred = saved.map { (u, pp, pin) ->
-                if (accounts.any { it.username == u }) return@map null
-                val cli = LagosClient(u, pp, pin)
-                val cookies = SecureStore.loadCookies(ctxApp, u)
-                if (cookies.isNotEmpty()) cli.restoreCookies(cookies)
-                val acc = SessionAccount(u, pp, pin, cli)
-                accounts.add(acc)
-                async(Dispatchers.IO) {
-                    val ok = if (cli.hasSession()) runCatching { cli.getBalance(); true }.getOrDefault(false) else false
-                    if (!ok) { if (cli.login()) SecureStore.saveCookies(ctxApp, u, cli.exportCookies()) }
-                    runCatching { acc.balance = cli.getBalance() }
-                    SecureStore.saveCookies(ctxApp, u, cli.exportCookies())
-                }
-            }.filterNotNull()
-            deferred.forEach { try { it.await() } catch (_: Exception) {} }
-        } catch (_: Exception) {} finally { isSyncing = false }
-    }
+    fun getUi(u: String) = vm.getUi(u)
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -153,7 +134,7 @@ fun App() {
                     else -> {
                         val acc = accounts.find { it.username == selected }
                         if (acc == null) MasterPage(accounts, snackbarHost, onSelect = { selected = it })
-                        else AccountPage(acc, snackbarHost)
+                        else AccountPage(acc, snackbarHost, vm)
                     }
                 }
                 if (isSyncing) {
@@ -328,7 +309,7 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
 }
 
 @Composable
-fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState) {
+fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel? = null) {
     val ctx = LocalContext.current
     val db = remember { LogDb(ctx) }
     val scope = rememberCoroutineScope()
