@@ -12,13 +12,16 @@ object TransferNotify {
     private const val GROUP = "lagos-transfers"
     private const val SUMMARY_ID = 0
 
+    @Volatile private var channelReady = false
     fun ensureChannel(ctx: Context) {
+        if (channelReady) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val ch = NotificationChannel(CHANNEL_ID, "Transfers", NotificationManager.IMPORTANCE_DEFAULT).apply {
                 description = "Transfer progress"
             }
             (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(ch)
         }
+        channelReady = true
     }
 
     private fun idFor(username: String) = 1000 + (username.hashCode() and 0x7fffffff) % 9000
