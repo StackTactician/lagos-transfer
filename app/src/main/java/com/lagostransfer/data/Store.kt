@@ -22,11 +22,8 @@ object SecureStore {
         return p
     }
     fun saveAccount(ctx: Context, username: String, password: String, pin: String?) {
-        prefs(ctx).edit()
-            .putString("u_$username", username)
-            .putString("p_$username", password)
-            .putString("pin_$username", pin ?: "")
-            .apply()
+        val c = mapOf("u_$username" to username, "p_$username" to password, "pin_$username" to (pin ?: ""))
+        prefs(ctx).edit().apply { c.forEach { (k, v) -> putString(k, v) } }.apply()
     }
     fun loadAccounts(ctx: Context): List<Triple<String,String,String?>> {
         val p = prefs(ctx)
@@ -39,6 +36,16 @@ object SecureStore {
     }
     fun removeAccount(ctx: Context, username: String) {
         prefs(ctx).edit().remove("u_$username").remove("p_$username").remove("pin_$username").apply()
+        if (prefs(ctx).all.keys.none { it.startsWith("u_") }) cachedPrefs = null
+    }
+    fun saveCookies(ctx: Context, username: String, map: Map<String, String>) {
+        prefs(ctx).edit().putString("ck_$username", map.entries.joinToString(";") { "${it.key}=${it.value}" }).apply()
+    }
+    fun loadCookies(ctx: Context, username: String): Map<String, String> {
+        val raw = prefs(ctx).getString("ck_$username", null) ?: return emptyMap()
+        return raw.split(";").filter { "=" in it }.map {
+            val (k, v) = it.split("=", limit = 2); k.trim() to v.trim()
+        }.toMap()
     }
     fun hash(s: String): String {
         val d = MessageDigest.getInstance("SHA-256").digest(s.toByteArray())
@@ -48,11 +55,18 @@ object SecureStore {
 
 data class LogEntry(val ts: Long, val account: String, val recipient: String, val amount: Long, val status: String, val transferred: Int, val remaining: Int, val amountLeft: Long)
 
-class LogDb(ctx: Context) : SQLiteOpenHelper(ctx, "transfer_logs.db", null, 1) {
+class LogDb(ctx: Context) : SQLiteOpenHelper(ctx, "transfer_logs.db", null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE logs(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, account TEXT, username_hash TEXT, recipient TEXT, amount INTEGER, status TEXT, transferred INTEGER, remaining INTEGER, amount_left INTEGER)")
+        db.execSQL("CREATE INDEX idx_recipient ON logs(recipient)")
+        db.execSQL("CREATE INDEX idx_account ON logs(account)")
     }
-    override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {}
+    override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {
+        if (old < 2) {
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_recipient ON logs(recipient)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_account ON logs(account)")
+        }
+    }
     fun insert(account: String, recipient: String, amount: Long, status: String, transferred: Int, remaining: Int, amountLeft: Long) {
         writableDatabase.execSQL(
             "INSERT INTO logs(ts,account,username_hash,recipient,amount,status,transferred,remaining,amount_left) VALUES(?,?,?,?,?,?,?,?,?)",
@@ -63,13 +77,7 @@ class LogDb(ctx: Context) : SQLiteOpenHelper(ctx, "transfer_logs.db", null, 1) {
         val c = readableDatabase.rawQuery("SELECT ts,recipient,amount,status,transferred,remaining,amount_left FROM logs WHERE account=? ORDER BY id DESC LIMIT 100", arrayOf(account))
         val out = mutableListOf<String>()
         while (c.moveToNext()) {
-            val rec = c.getString(1)
-            val amt = c.getLong(2)
-            val st = c.getString(3)
-            val tr = c.getInt(4)
-            val rem = c.getInt(5)
-            val left = c.getLong(6)
-            out.add("$st ₦$amt → @$rec · $tr sent, $rem left, ₦$left left")
+            out.add("${c.getString(3)} ₦${c.getLong(2)} → @${c.getString(1)} · ${c.getInt(4)} sent, ${c.getInt(5)} left, ₦${c.getLong(6)} left")
         }
         c.close(); return out
     }

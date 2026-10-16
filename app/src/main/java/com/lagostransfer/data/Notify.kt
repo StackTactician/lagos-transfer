@@ -23,6 +23,17 @@ object TransferNotify {
 
     private fun idFor(username: String) = 1000 + (username.hashCode() and 0x7fffffff) % 9000
 
+    fun clearProgress(ctx: Context) {
+        ensureChannel(ctx)
+        try { NotificationManagerCompat.from(ctx).cancel(SUMMARY_ID) } catch (_: SecurityException) {}
+    }
+
+    fun clearAll(ctx: Context, usernames: List<String>) {
+        ensureChannel(ctx)
+        val nm = NotificationManagerCompat.from(ctx)
+        try { usernames.forEach { nm.cancel(idFor(it)) }; nm.cancel(SUMMARY_ID) } catch (_: SecurityException) {}
+    }
+
     fun showProgress(ctx: Context, username: String, current: Int, total: Int, amount: Long, status: String) {
         ensureChannel(ctx)
         val n = NotificationCompat.Builder(ctx, CHANNEL_ID)
@@ -58,7 +69,11 @@ object TransferNotify {
             .setAutoCancel(true)
             .setGroup(GROUP)
             .build()
-        try { NotificationManagerCompat.from(ctx).notify(idFor(username), n) } catch (_: SecurityException) {}
+        try {
+            val nm = NotificationManagerCompat.from(ctx)
+            nm.cancel(idFor(username))
+            nm.notify(idFor(username) + 5, n)
+        } catch (_: SecurityException) {}
     }
 
     fun showError(ctx: Context, username: String, msg: String) {

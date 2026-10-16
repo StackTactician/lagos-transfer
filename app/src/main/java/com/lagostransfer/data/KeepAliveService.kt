@@ -13,7 +13,10 @@ class KeepAliveService : Service() {
         super.onCreate()
         TransferNotify.ensureChannel(this)
         val pm = getSystemService(POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LagosTransfer::keep").apply { acquire() }
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "EkoAza::keep").apply {
+            setReferenceCounted(false)
+            acquire(30 * 60 * 1000L)
+        }
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val n = NotificationCompat.Builder(this, "transfers")
@@ -22,12 +25,17 @@ class KeepAliveService : Service() {
             .setContentText("Keeping transfers alive in background")
             .setOngoing(true)
             .build()
-        startForeground(1, n)
-        return START_STICKY
+        try { startForeground(1, n) } catch (_: Exception) { stopSelf() }
+        return START_NOT_STICKY
     }
     override fun onDestroy() {
         wakeLock?.let { if (it.isHeld) it.release() }
+        TransferNotify.clearProgress(this)
         super.onDestroy()
     }
     override fun onBind(intent: Intent?): IBinder? = null
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
+    }
 }
