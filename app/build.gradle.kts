@@ -6,6 +6,16 @@ plugins {
 android {
     namespace = "com.lagostransfer"
     compileSdk = 34
+    signingConfigs {
+        create("fixed") {
+            enableV1Signing = true
+            enableV2Signing = true
+            storeFile = file("../debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
     defaultConfig {
         applicationId = "com.lagostransfer"
         minSdk = 24
@@ -14,6 +24,7 @@ android {
         versionName = "0.1.0"
     }
     buildFeatures { compose = true }
+    buildTypes { debug { signingConfig = signingConfigs.getByName("fixed") } }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
