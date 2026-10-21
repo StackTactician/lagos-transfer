@@ -17,7 +17,7 @@ class TransferRunnerTest {
     private class FakeApi(
         var balance: Long = 1_000_000L,
         var hasGame: Boolean = true,
-        var lookupResult: Lookup? = null
+        var lookupResult: Lookup? = null,
         val lookupFails = mutableSetOf<String>()
     ) : TransferApi {
         var nowMs: Long = 1_000_000L
