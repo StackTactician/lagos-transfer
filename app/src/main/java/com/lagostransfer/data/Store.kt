@@ -77,13 +77,18 @@ class LogDb(ctx: Context) : SQLiteOpenHelper(ctx, "transfer_logs.db", null, 2) {
         val c = readableDatabase.rawQuery("SELECT ts,recipient,amount,status,transferred,remaining,amount_left FROM logs WHERE account=? ORDER BY id DESC LIMIT 100", arrayOf(account))
         val out = mutableListOf<String>()
         while (c.moveToNext()) {
-            out.add("${c.getString(3)} ₦${c.getLong(2)} → @${c.getString(1)} · ${c.getInt(4)} sent, ${c.getInt(5)} left, ₦${c.getLong(6)} left")
+            val total = c.getInt(4) + c.getInt(5)
+            out.add("${c.getInt(4)}/$total · ₦${c.getLong(2)} → @${c.getString(1)} · ${c.getString(3)}")
         }
         c.close(); return out
     }
-    fun history(search: String?, filterStatus: String?): List<LogEntry> {
+    fun history(search: String?, filterStatus: String?, account: String? = null): List<LogEntry> {
         val where = mutableListOf<String>()
         val args = mutableListOf<String>()
+        if (!account.isNullOrBlank() && account != "All") {
+            where.add("account = ?")
+            args.add(account)
+        }
         if (!search.isNullOrBlank()) {
             where.add("(recipient LIKE ? OR account LIKE ?)")
             args.add("%$search%"); args.add("%$search%")

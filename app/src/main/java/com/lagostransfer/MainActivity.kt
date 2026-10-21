@@ -10,6 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
@@ -40,9 +41,11 @@ data class SessionAccount(
     val password: String,
     val pin: String?,
     val client: LagosClient,
-    var balance: Balance? = null,
-    var enabled: Boolean = true
-)
+    var balance: Balance? = null
+) {
+    /** Compose state, so the switch reacts right away instead of on the next redraw. */
+    var enabled by mutableStateOf(true)
+}
 
 class MainActivity : ComponentActivity() {
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
@@ -76,12 +79,11 @@ fun App() {
     val isSyncing = vm.isSyncing
     val licence = vm.licence
 
+    Box(Modifier.fillMaxSize()) {
     // Trial used up or the trial data was edited - nothing works until a code is entered.
     if (licence.locked) {
-        ActivationScreen(vm)
-        return
-    }
-
+        ActivationScreen(vm, snackbarHost)
+    } else {
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
@@ -121,12 +123,11 @@ fun App() {
                     }
                 )
             },
-            snackbarHost = { SnackbarHost(snackbarHost) }
         ) { pad ->
             Box(Modifier.padding(pad)) {
                 when (selected) {
                     null -> MasterPage(vm, snackbarHost, onSelect = { selected = it })
-                    "history" -> HistoryPage()
+                    "history" -> HistoryPage(vm)
                     else -> {
                         val acc = accounts.find { it.username == selected }
                         if (acc == null) MasterPage(vm, snackbarHost, onSelect = { selected = it })
@@ -139,17 +140,19 @@ fun App() {
             }
         }
     }
+    }
+    SnackbarHost(snackbarHost, Modifier.align(Alignment.BottomCenter))
+    }
 }
 
 @Composable
-fun ActivationScreen(vm: AppViewModel) {
+fun ActivationScreen(vm: AppViewModel, snacks: SnackbarHostState) {
     val scope = rememberCoroutineScope()
     var code by remember { mutableStateOf("") }
-    var err by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     val licence = vm.licence
 
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+    Box(Modifier.fillMaxSize()) {
         Column(
             Modifier.fillMaxSize().padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -176,18 +179,27 @@ fun ActivationScreen(vm: AppViewModel) {
                 modifier = Modifier.fillMaxWidth(),
                 onClick = {
                     busy = true
-                    err = ""
                     vm.redeem(code) { e ->
-                        err = e
                         busy = false
-                        if (e.isEmpty()) code = ""
+                        if (e.isEmpty()) {
+                            code = ""
+                            scope.launch { snacks.showSnackbar("Activated - this phone is licensed") }
+                        } else {
+                            scope.launch { snacks.showSnackbar(e) }
+                        }
                     }
                 }
-            ) { Text(if (busy) "Checking" else "Activate") }
-            if (err.isNotBlank()) {
-                Text(err, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-            }
+            ) { Text("Activate") }
             Text("Device ${licence.deviceId.take(8)}", style = MaterialTheme.typography.labelSmall)
+        }
+        if (busy) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Surface(
+                    Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background.copy(alpha = 0.7f)
+                ) {}
+                CircularProgressIndicator()
+            }
         }
     }
 }
@@ -305,7 +317,16 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
                                     if (e.isEmpty()) code = ""
                                 }
                             }) { Text("Activate") }
-                            OutlinedButton(onClick = { vm.reloadLicence() }) { Text("Check licence") }
+                            OutlinedButton(onClick = {
+                                vm.reloadLicence { st ->
+                                    scope.launch {
+                                        snacks.showSnackbar(
+                                            if (st.licensed) "Licensed on this phone"
+                                            else "No licence on this phone - trial used ${naira(st.trialVolume)}"
+                                        )
+                                    }
+                                }
+                            }) { Text("Check licence") }
                         }
                         if (msg.isNotBlank()) Text(msg, style = MaterialTheme.typography.labelSmall)
                     }
@@ -416,10 +437,13 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
                     Divider()
                     Text("Can send today: ${ui.canSendText}", style = MaterialTheme.typography.bodySmall)
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Transfers")
                         Switch(checked = acc.enabled, onCheckedChange = { acc.enabled = it })
-                        Text(if (acc.enabled) "Enabled" else "Paused", fontWeight = FontWeight.SemiBold)
+                        Text(if (acc.enabled) "Sending on" else "Paused", fontWeight = FontWeight.SemiBold)
                     }
+                    Text(
+                        "Pause stops this account at the next send. The other accounts keep going.",
+                        style = MaterialTheme.typography.labelSmall
+                    )
                     OutlinedButton(enabled = !ui.refreshing, onClick = { vm.refreshBalance(acc.username) }) {
                         if (ui.refreshing) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp) else Text("Refresh balance")
                     }
@@ -433,8 +457,14 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
                         Text("Server ledger", fontWeight = FontWeight.Bold)
                         TextButton(onClick = { vm.loadIncoming(acc.username) }) { Text("Refresh") }
                     }
+                    if (ui.ledgerNote.isNotBlank()) {
+                        Text(ui.ledgerNote, style = MaterialTheme.typography.labelSmall)
+                    }
                     if (ui.ledger.isEmpty()) {
-                        Text("Nothing on the server for this account yet.", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "No transfers on the server for this account yet. Send something, then refresh.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     } else {
                         ui.ledger.take(8).forEach { t ->
                             val state = if (t.received || t.status == "delivered") "claimed" else "waiting to be claimed"
@@ -574,11 +604,12 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
 }
 
 @Composable
-fun HistoryPage() {
+fun HistoryPage(vm: AppViewModel) {
     val ctx = LocalContext.current
     val db = remember { LogDb(ctx) }
     var search by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf("All") }
+    var account by remember { mutableStateOf("All") }
     var entries by remember { mutableStateOf(listOf<LogEntry>()) }
     var loading by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -586,7 +617,7 @@ fun HistoryPage() {
     fun refresh() {
         scope.launch {
             loading = true
-            entries = withContext(Dispatchers.IO) { db.history(search.ifBlank { null }, filter) }
+            entries = withContext(Dispatchers.IO) { db.history(search.ifBlank { null }, filter, account) }
             loading = false
         }
     }
@@ -601,9 +632,17 @@ fun HistoryPage() {
                 FilterChip(selected = filter == f, onClick = { filter = f; refresh() }, label = { Text(f) })
             }
         }
+        if (vm.accounts.size > 1) {
+            Text("Account", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(listOf("All") + vm.accounts.map { it.username }) { a ->
+                    FilterChip(selected = account == a, onClick = { account = a; refresh() }, label = { Text(if (a == "All") "All" else "@$a") })
+                }
+            }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { refresh() }) { if (loading) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp) else Text("Search") }
-            TextButton(onClick = { search = ""; filter = "All"; refresh() }) { Text("Clear") }
+            TextButton(onClick = { search = ""; filter = "All"; account = "All"; refresh() }) { Text("Clear") }
         }
         if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(4.dp))
         Divider()

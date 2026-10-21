@@ -31,6 +31,7 @@ class UiState {
     var total by mutableStateOf(0)
     var incoming by mutableStateOf(listOf<Transfer>())
     var ledger by mutableStateOf(listOf<Transfer>())
+    var ledgerNote by mutableStateOf("")
 
     /** The send form belongs to the account, not to the page - so it never mixes. */
     var recipient by mutableStateOf("")
@@ -102,10 +103,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Reads the trial counter from the phone and asks the server about the licence. */
-    fun reloadLicence() {
+    fun reloadLicence(onDone: ((LicenceState) -> Unit)? = null) {
         viewModelScope.launch {
             licence = License.load(app)
             licence = License.refresh(app)
+            onDone?.invoke(licence)
         }
     }
 
@@ -179,8 +181,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val list = acc.client.ledger()
                 s.ledger = list.take(30)
                 s.incoming = list.filter { it.waiting }
+                s.ledgerNote = "checked ${java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date())} · ${list.size} on the server"
             } catch (e: Exception) {
-                s.lastError = friendlyError(e)
+                s.ledgerNote = "could not read the server ledger - ${friendlyError(e)}"
             }
         }
     }
@@ -272,7 +275,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 TransferNotify.clearAll(app, listOf(username))
                 s.busy = false
                 s.status = ""
-                s.log = db2(username)
+                if (s.log.isEmpty()) s.log = db2(username)
                 stops.remove(username)
             }
         }
@@ -298,8 +301,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val s = getUi(username)
         when (step) {
             is RunStep.Status -> {
+                // status is for the line under the buttons, it is not activity
                 s.status = step.text
-                s.log = listOf(step.text) + s.log.take(100)
             }
             is RunStep.Balance -> {
                 acc.balance = Balance(step.money, acc.balance?.canSend, acc.balance?.hasGame ?: true)
@@ -310,9 +313,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 s.sent = s.sent + 1
                 s.total = s.total.coerceAtLeast(step.index)
                 s.status = "Sent ${s.sent} of ${s.total}"
-                val line = "Sent ${s.sent}/${s.total} ${naira(amount)} to @$recipient" +
-                    (if (step.id != null) " - ${step.id.takeLast(6)}" else " (recovered)")
+                val line = "${s.sent}/${s.total} · ${naira(amount)} → @$recipient" +
+                    (if (step.id != null) "" else " (recovered)")
                 s.log = listOf(line) + s.log.take(100)
+                withContext(Dispatchers.IO) {
+                    db.insert(username, recipient, amount, "sent", step.index, times - step.index, amount * (times - step.index))
+                }
                 TransferNotify.showProgress(
                     app, username, s.sent, s.total, amount,
                     "Sent ${s.sent}/${s.total}" + if (step.fee > 0) " · fee ${naira(step.fee)}" else ""
@@ -320,7 +326,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             is RunStep.Skipped -> {
                 s.status = "Failed ${step.index} - ${step.reason}"
-                s.log = listOf("Failed ${step.index}/${s.total} - ${step.reason}") + s.log.take(100)
+                s.log = listOf("${step.index}/${times} · @$recipient · ${step.reason}") + s.log.take(100)
                 TransferNotify.showError(app, username, step.reason)
                 withContext(Dispatchers.IO) {
                     db.insert(username, recipient, amount, "failed", step.index - 1, times - step.index, amount * (times - step.index))
@@ -329,7 +335,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             is RunStep.Halted -> {
                 s.status = step.reason
                 s.lastError = step.reason
-                s.log = listOf(step.reason) + s.log.take(100)
+                s.log = listOf("stopped · ${step.reason}") + s.log.take(100)
                 TransferNotify.showError(app, username, step.reason)
                 withContext(Dispatchers.IO) {
                     db.insert(username, recipient, amount, "failed", s.sent, times - s.sent, amount * (times - s.sent))
