@@ -200,13 +200,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val acc = accounts.find { it.username == username } ?: return
         val s = getUi(username)
         if (jobs[username]?.isActive == true) return
+        // One name, or a list - the list is served one recipient after the other.
+        val recipients = parseRecipients(recipient)
         val stopFlag = AtomicBoolean(false)
         stops[username] = stopFlag
         s.busy = true
         s.log = emptyList()
         s.status = "Starting"
         s.sent = 0
-        s.total = times
+        s.total = times * recipients.size
         s.lastError = ""
 
         jobs[username] = viewModelScope.launch {
@@ -217,15 +219,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 } catch (_: Exception) {
                 }
                 val db = LogDb(app)
-                val runner = TransferRunner(acc.client)
-                runner.run(
-                    recipient = recipient,
+                runRecipients(
+                    api = acc.client,
+                    recipients = recipients,
                     amount = amount,
                     times = times,
                     note = note,
                     stop = { stopFlag.get() },
                     paused = { !acc.enabled },
-                    emit = { step -> onStep(username, acc, db, step, recipient, amount) }
+                    emit = { name, step -> onStep(username, acc, db, step, name, amount, times) }
                 )
                 try {
                     acc.balance = acc.client.getBalance()
@@ -266,7 +268,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         db: LogDb,
         step: RunStep,
         recipient: String,
-        amount: Long
+        amount: Long,
+        times: Int
     ) {
         val s = getUi(username)
         when (step) {
@@ -295,7 +298,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 s.log = listOf("Failed ${step.index}/${s.total} - ${step.reason}") + s.log.take(100)
                 TransferNotify.showError(app, username, step.reason)
                 withContext(Dispatchers.IO) {
-                    db.insert(username, recipient, amount, "failed", step.index - 1, s.total - step.index, amount * (s.total - step.index))
+                    db.insert(username, recipient, amount, "failed", step.index - 1, times - step.index, amount * (times - step.index))
                 }
             }
             is RunStep.Halted -> {
@@ -304,7 +307,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 s.log = listOf(step.reason) + s.log.take(100)
                 TransferNotify.showError(app, username, step.reason)
                 withContext(Dispatchers.IO) {
-                    db.insert(username, recipient, amount, "failed", s.sent, s.total - s.sent, amount * (s.total - s.sent))
+                    db.insert(username, recipient, amount, "failed", s.sent, times - s.sent, amount * (times - s.sent))
                 }
             }
         }

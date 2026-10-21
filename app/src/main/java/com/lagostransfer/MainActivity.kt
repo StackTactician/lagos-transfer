@@ -380,27 +380,38 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
         }
         item {
             Text("Send money", fontWeight = FontWeight.Bold)
-            Text("One recipient per run - 32s between sends - a lost connection is checked with the server before any retry", style = MaterialTheme.typography.labelSmall)
+            Text("One or many recipients - each one is served in turn - 32s between sends - a lost connection is checked with the server before any retry", style = MaterialTheme.typography.labelSmall)
         }
         item {
-            OutlinedTextField(recipient, { ui.recipient = it.trim(); ui.resolved = "" }, label = { Text("Recipient username") }, placeholder = { Text("e.g. adewale") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            OutlinedTextField(recipient, { ui.recipient = it.trim(); ui.resolved = "" }, label = { Text("Recipient username(s)") }, placeholder = { Text("adewale, chidi or space separated") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     enabled = recipient.isNotBlank() && !ui.busy,
                     onClick = {
                         scope.launch {
-                            try {
-                                when (val l = acc.client.resolveUsername(recipient)) {
-                                    is Lookup.Found -> { ui.resolved = l.id; snacks.showSnackbar("Found @$recipient") }
-                                    Lookup.NotFound -> { ui.resolved = ""; snacks.showSnackbar("No user @$recipient") }
-                                    is Lookup.Failed -> { ui.resolved = ""; snacks.showSnackbar(l.reason) }
-                                }
-                            } catch (e: Exception) { snacks.showSnackbar(friendlyError(e)) }
+                            val names = parseRecipients(recipient)
+                            if (names.isEmpty()) { snacks.showSnackbar("No recipient given"); return@launch }
+                            val missing = mutableListOf<String>()
+                            var found = 0
+                            for (n in names) {
+                                try {
+                                    when (val l = acc.client.resolveUsername(n)) {
+                                        is Lookup.Found -> { found++; ui.resolved = l.id }
+                                        else -> missing.add(n)
+                                    }
+                                } catch (e: Exception) { missing.add(n) }
+                            }
+                            if (missing.isEmpty()) {
+                                snacks.showSnackbar("Found $found recipient(s)")
+                            } else {
+                                ui.resolved = ""
+                                snacks.showSnackbar("No user: ${missing.joinToString(", ")}")
+                            }
                         }
                     }
                 ) { Text("Check") }
                 Text(
-                    text = if (resolved.isBlank()) "" else "Found @$recipient",
+                    text = if (resolved.isBlank()) "" else "Checked ${parseRecipients(recipient).size} name(s)",
                     style = MaterialTheme.typography.labelSmall
                 )
             }
@@ -449,7 +460,14 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
                     modifier = Modifier.weight(1f),
                     onClick = { vm.startSend(acc.username, recipient, amt, t, note.ifBlank { null }) }
                 ) {
-                    Text(if (ui.busy) "Sending ${ui.sent}/${ui.total}" else "Send ${if (t > 0) "${t}x " else ""}${if (amt > 0) naira(amt) else ""} to @$recipient".trim())
+                    val names = parseRecipients(recipient)
+                    Text(
+                        when {
+                            ui.busy -> "Sending ${ui.sent}/${ui.total}"
+                            names.size > 1 -> "Send ${if (t > 0) "${t}x " else ""}${if (amt > 0) naira(amt) else ""} to ${names.size} people"
+                            else -> "Send ${if (t > 0) "${t}x " else ""}${if (amt > 0) naira(amt) else ""} to @$recipient".trim()
+                        }
+                    )
                 }
                 if (ui.busy) {
                     OutlinedButton(onClick = { vm.stopSend(acc.username) }) { Text("Stop") }

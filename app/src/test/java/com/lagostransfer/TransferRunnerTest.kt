@@ -17,7 +17,8 @@ class TransferRunnerTest {
     private class FakeApi(
         var balance: Long = 1_000_000L,
         var hasGame: Boolean = true,
-        var lookupResult: Lookup = Lookup.Found("id-target")
+        var lookupResult: Lookup? = null
+        val lookupFails = mutableSetOf<String>()
     ) : TransferApi {
         var nowMs: Long = 1_000_000L
         var lastSendAtMs: Long = 0L
@@ -31,11 +32,14 @@ class TransferRunnerTest {
 
         override fun now(): Long = nowMs
         override fun lastSendAtMillis(): Long = lastSendAtMs
-        override suspend fun resolveUsername(username: String): Lookup = lookupResult
+        override suspend fun resolveUsername(username: String): Lookup {
+            if (username in lookupFails) return Lookup.Failed("lookup broke")
+            return lookupResult ?: Lookup.Found("id-$username")
+        }
         override suspend fun getBalance(): Balance = Balance(balance, null, hasGame)
         override suspend fun ledger(): List<Transfer> {
             if (ledgerBroken) throw IOException("history unavailable")
-            return appliedIds.mapIndexed { i, id -> Transfer(id, "target", applied[i].second, true, false, "waiting", nowMs, null, null) }
+            return appliedIds.mapIndexed { i, id -> Transfer(id, applied[i].first, applied[i].second, true, false, "waiting", nowMs, null, null) }
         }
         override suspend fun claimIncoming(): List<Transfer> = emptyList()
 
@@ -44,7 +48,7 @@ class TransferRunnerTest {
             val scriptedResult = if (scripted.isNotEmpty()) scripted.removeFirst() else null
             if (scriptedResult != null && scriptedResult.ambiguous) {
                 if (applyThenDrop) {
-                    applied.add(toId to amount)   // server applied it, the answer was lost
+                    applied.add(toId.removePrefix("id-") to amount)   // server applied it, the answer was lost
                     appliedIds.add("t${applied.size}")
                     sentAt.add(nowMs)
                     lastSendAtMs = nowMs
@@ -54,7 +58,7 @@ class TransferRunnerTest {
             if (scriptedResult != null && !scriptedResult.ok) {
                 return scriptedResult            // the server refused - no money moved
             }
-            applied.add(toId to amount)
+            applied.add(toId.removePrefix("id-") to amount)
             appliedIds.add("t${applied.size}")
             sentAt.add(nowMs)
             lastSendAtMs = nowMs
@@ -213,7 +217,8 @@ class TransferRunnerTest {
 
     @Test
     fun unknownRecipientStopsTheRun() {
-        val api = FakeApi(lookupResult = Lookup.NotFound)
+        val api = FakeApi()
+        api.lookupResult = Lookup.NotFound
         val rec = run(api, times = 1)
         assertEquals(0, api.calls.size)
         assertTrue(rec.halted.any { it.contains("No user") })
@@ -275,5 +280,59 @@ class TransferRunnerTest {
         }
         assertEquals(1, api.applied.size)
         assertTrue(rec.halted.any { it.contains("Stopped") })
+    }
+
+    @Test
+    fun parsesRecipientList() {
+        assertEquals(listOf("adewale", "chidi"), parseRecipients("adewale, chidi"))
+        assertEquals(listOf("a", "b", "c"), parseRecipients("a b,c"))
+        assertEquals(listOf("adewale"), parseRecipients("  adewale  "))
+        assertEquals(emptyList<String>(), parseRecipients("   "))
+    }
+
+    @Test
+    fun servesRecipientsOneAfterAnother() {
+        val api = FakeApi()
+        val rec = Recorder()
+        runBlocking {
+            runRecipients(
+                api, listOf("adewale", "chidi", "epe"), 1_000L, 2, null,
+                { ms, stop -> api.nowMs += ms; stop() },
+                { false }, { false }
+            ) { _, step -> rec.on(step) }
+        }
+        assertEquals(
+            listOf("adewale", "adewale", "chidi", "chidi", "epe", "epe"),
+            api.applied.map { it.first }
+        )
+        assertEquals(6, rec.sent.size)
+    }
+
+    @Test
+    fun fatalProblemStopsTheWholeList() {
+        val api = FakeApi()
+        api.scripted.add(SendResult(ok = false, http = 403, error = "balance can't be sent"))
+        runBlocking {
+            runRecipients(
+                api, listOf("adewale", "chidi"), 1_000L, 1, null,
+                { ms, stop -> api.nowMs += ms; stop() },
+                { false }, { false }
+            ) { _, _ -> }
+        }
+        assertEquals("the list must stop on an account level problem", 1, api.calls.size)
+    }
+
+    @Test
+    fun unknownRecipientDoesNotStopTheList() {
+        val api = FakeApi()
+        api.lookupFails.add("ghost")
+        runBlocking {
+            runRecipients(
+                api, listOf("ghost", "chidi"), 1_000L, 1, null,
+                { ms, stop -> api.nowMs += ms; stop() },
+                { false }, { false }
+            ) { _, _ -> }
+        }
+        assertEquals(listOf("chidi"), api.applied.map { it.first })
     }
 }

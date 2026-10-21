@@ -3,11 +3,16 @@ package com.lagostransfer.data
 import kotlinx.coroutines.delay
 import kotlin.math.max
 
+/** Splits the recipient field into single usernames - comma, semicolon or space. */
+fun parseRecipients(text: String): List<String> =
+    text.split(Regex("[,;\\s]+")).map { it.trim() }.filter { it.isNotEmpty() }
+
 sealed class RunStep {
     data class Status(val text: String) : RunStep()
     data class Sent(val index: Int, val id: String?, val fee: Long) : RunStep()
     data class Skipped(val index: Int, val reason: String) : RunStep()
-    data class Halted(val reason: String) : RunStep()
+    /** fatal = the whole account must stop, not just this recipient. */
+    data class Halted(val reason: String, val fatal: Boolean = false) : RunStep()
     data class Balance(val money: Long) : RunStep()
 }
 
@@ -119,11 +124,11 @@ class TransferRunner(
             emit(RunStep.Balance(balance.money))
             val fee = LagosClient.feeFor(amount)
             if (!balance.hasGame) {
-                emit(RunStep.Halted("This account has no game state yet - open Lagos Life once first"))
+                emit(RunStep.Halted("This account has no game state yet - open Lagos Life once first", true))
                 return
             }
             if (balance.money < amount + fee) {
-                emit(RunStep.Halted("Not enough funds - have ${balance.money}, need ${amount + fee}"))
+                emit(RunStep.Halted("Not enough funds - have ${balance.money}, need ${amount + fee}", true))
                 return
             }
 
@@ -160,12 +165,12 @@ class TransferRunner(
                     }
 
                     result.errorCode == "pin" -> {
-                        emit(RunStep.Halted("This account has a transaction PIN - add the PIN in the account, then send again"))
+                        emit(RunStep.Halted("This account has a transaction PIN - add the PIN in the account, then send again", true))
                         return
                     }
 
                     result.errorCode == "pin_wrong" -> {
-                        emit(RunStep.Halted("Wrong transaction PIN - sending locks for 15 minutes after a few tries. Fix the PIN first."))
+                        emit(RunStep.Halted("Wrong transaction PIN - sending locks for 15 minutes after a few tries. Fix the PIN first.", true))
                         return
                     }
 
@@ -175,12 +180,12 @@ class TransferRunner(
                     }
 
                     result.http == 401 -> {
-                        emit(RunStep.Halted("Session expired - log in again from Master"))
+                        emit(RunStep.Halted("Session expired - log in again from Master", true))
                         return
                     }
 
                     result.http == 403 -> {
-                        emit(RunStep.Halted(result.error ?: "The server is holding part of this balance"))
+                        emit(RunStep.Halted(result.error ?: "The server is holding part of this balance", true))
                         return
                     }
 
@@ -236,5 +241,50 @@ class TransferRunner(
             }
         }
         emit(RunStep.Status("Done - $sent of $times sent"))
+    }
+}
+
+/**
+ * Serves several recipients one after another: the full run of recipient one,
+ * then the same amount for recipient two, and so on.
+ */
+suspend fun runRecipients(
+    api: TransferApi,
+    recipients: List<String>,
+    amount: Long,
+    times: Int,
+    note: String?,
+    sleeper: suspend (Long, () -> Boolean) -> Boolean = ::realSleep,
+    stop: () -> Boolean,
+    paused: () -> Boolean,
+    emit: suspend (String, RunStep) -> Unit
+) {
+    var index = 0
+    for (name in recipients) {
+        if (stop()) return
+        index++
+        val tag = if (recipients.size > 1) "[$index/${recipients.size}] " else ""
+        var fatal = false
+        val runner = TransferRunner(api, sleeper)
+        runner.run(
+            recipient = name,
+            amount = amount,
+            times = times,
+            note = note,
+            stop = stop,
+            paused = paused,
+            emit = { step ->
+                when (step) {
+                    is RunStep.Status -> emit(name, RunStep.Status(tag + step.text))
+                    is RunStep.Skipped -> emit(name, RunStep.Skipped(step.index, tag + step.reason))
+                    is RunStep.Halted -> {
+                        fatal = step.fatal
+                        emit(name, RunStep.Halted(tag + step.reason, step.fatal))
+                    }
+                    else -> emit(name, step)
+                }
+            }
+        )
+        if (fatal) return
     }
 }
