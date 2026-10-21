@@ -18,7 +18,7 @@ class TransferRunnerTest {
         var balance: Long = 1_000_000L,
         var hasGame: Boolean = true,
         var lookupResult: Lookup? = null,
-        val lookupFails = mutableSetOf<String>()
+        val lookupFails: MutableSet<String> = mutableSetOf()
     ) : TransferApi {
         var nowMs: Long = 1_000_000L
         var lastSendAtMs: Long = 0L
