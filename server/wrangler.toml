@@ -1,0 +1,8 @@
+name = "eko-licence"
+main = "worker.js"
+compatibility_date = "2026-10-21"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "eko-licence"
+database_id = "d754d431-5006-4a34-b76b-11c4da326ce3"
