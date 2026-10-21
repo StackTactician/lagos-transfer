@@ -299,11 +299,12 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
         Text("Loading account...")
         return
     }
-    var recipient by remember { mutableStateOf("") }
-    var resolved by remember { mutableStateOf("") }
-    var amount by remember { mutableStateOf("10000000000") }
-    var times by remember { mutableStateOf("1") }
-    var note by remember { mutableStateOf("") }
+    // The form lives on the account, not on the page - account A never shows account B input.
+    val recipient = ui.recipient
+    val resolved = ui.resolved
+    val amount = ui.amount
+    val times = ui.times
+    val note = ui.note
 
     LaunchedEffect(acc.username) {
         vm.refreshBalance(acc.username)
@@ -382,7 +383,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
             Text("One recipient per run - 32s between sends - a lost connection is checked with the server before any retry", style = MaterialTheme.typography.labelSmall)
         }
         item {
-            OutlinedTextField(recipient, { recipient = it.trim(); resolved = "" }, label = { Text("Recipient username") }, placeholder = { Text("e.g. adewale") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            OutlinedTextField(recipient, { ui.recipient = it.trim(); ui.resolved = "" }, label = { Text("Recipient username") }, placeholder = { Text("e.g. adewale") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     enabled = recipient.isNotBlank() && !ui.busy,
@@ -390,9 +391,9 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
                         scope.launch {
                             try {
                                 when (val l = acc.client.resolveUsername(recipient)) {
-                                    is Lookup.Found -> { resolved = l.id; snacks.showSnackbar("Found @$recipient") }
-                                    Lookup.NotFound -> { resolved = ""; snacks.showSnackbar("No user @$recipient") }
-                                    is Lookup.Failed -> { resolved = ""; snacks.showSnackbar(l.reason) }
+                                    is Lookup.Found -> { ui.resolved = l.id; snacks.showSnackbar("Found @$recipient") }
+                                    Lookup.NotFound -> { ui.resolved = ""; snacks.showSnackbar("No user @$recipient") }
+                                    is Lookup.Failed -> { ui.resolved = ""; snacks.showSnackbar(l.reason) }
                                 }
                             } catch (e: Exception) { snacks.showSnackbar(friendlyError(e)) }
                         }
@@ -407,7 +408,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
         item {
             OutlinedTextField(
                 value = amount,
-                onValueChange = { v -> amount = v.filter { it.isDigit() }.take(13) },
+                onValueChange = { v -> ui.amount = v.filter { it.isDigit() }.take(13) },
                 label = { Text("Amount") },
                 prefix = { Text("₦") },
                 modifier = Modifier.fillMaxWidth(),
@@ -427,7 +428,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
         item {
             OutlinedTextField(
                 value = times,
-                onValueChange = { v -> times = v.filter { it.isDigit() }.take(3) },
+                onValueChange = { v -> ui.times = v.filter { it.isDigit() }.take(3) },
                 label = { Text("How many times") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
@@ -438,7 +439,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
             }
         }
         item {
-            OutlinedTextField(note, { note = it }, label = { Text("Note (optional, 3+ characters)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            OutlinedTextField(note, { ui.note = it }, label = { Text("Note (optional, 3+ characters)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         }
         item {
             if (ui.busy) Text(ui.status, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)

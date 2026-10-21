@@ -24,7 +24,12 @@ object TransferNotify {
         channelReady = true
     }
 
-    private fun idFor(username: String) = 1000 + (username.hashCode() and 0x7fffffff) % 9000
+    // One stable id per account - a hash can collide and would mix two notifications.
+    private val ids = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private val nextId = java.util.concurrent.atomic.AtomicInteger(1000)
+
+    private fun idFor(username: String): Int =
+        ids.getOrPut(username) { nextId.incrementAndGet() * 10 }
 
     fun clearProgress(ctx: Context) {
         ensureChannel(ctx)
@@ -75,7 +80,7 @@ object TransferNotify {
         try {
             val nm = NotificationManagerCompat.from(ctx)
             nm.cancel(idFor(username))
-            nm.notify(idFor(username) + 5, n)
+            nm.notify(idFor(username) + 1, n)
         } catch (_: SecurityException) {}
     }
 

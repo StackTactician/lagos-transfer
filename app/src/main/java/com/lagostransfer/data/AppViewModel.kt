@@ -31,6 +31,13 @@ class UiState {
     var total by mutableStateOf(0)
     var incoming by mutableStateOf(listOf<Transfer>())
     var ledger by mutableStateOf(listOf<Transfer>())
+
+    /** The send form belongs to the account, not to the page - so it never mixes. */
+    var recipient by mutableStateOf("")
+    var resolved by mutableStateOf("")
+    var amount by mutableStateOf("10000000000")
+    var times by mutableStateOf("1")
+    var note by mutableStateOf("")
     var lastError by mutableStateOf("")
 }
 
@@ -60,6 +67,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         val cookies = withContext(Dispatchers.IO) { SecureStore.loadCookies(app, u) }
                         if (cookies.isNotEmpty()) cli.restoreCookies(cookies)
                         val acc = SessionAccount(u, pp, pin, cli)
+                        cli.onAuthLost = {
+                            acc.enabled = false
+                            getUi(u).lastError = "Session lost - log in again from Master"
+                        }
                         accounts.add(acc)
                         val s = getUi(u)
                         async(Dispatchers.IO) {
@@ -95,6 +106,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val cli = LagosClient(u, password, pin)
         if (!cli.login()) return "Could not log in - check username and password"
         val acc = SessionAccount(u, password, pin, cli)
+        cli.onAuthLost = {
+            acc.enabled = false
+            getUi(u).lastError = "Session lost - log in again from Master"
+        }
         try { acc.balance = cli.getBalance() } catch (_: Exception) {}
         withContext(Dispatchers.IO) {
             SecureStore.saveAccount(app, u, password, pin)
