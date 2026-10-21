@@ -246,7 +246,7 @@ class LagosClient(
         if (res.code != 200) throw ApiException(res.code, "History check failed (${res.code})")
         val j = JSONObject(res.body.ifBlank { "{}" })
         val arr = j.optJSONArray("items") ?: return emptyList()
-        (0 until arr.length()).mapNotNull { i ->
+        return (0 until arr.length()).mapNotNull { i ->
             val o = arr.optJSONObject(i) ?: return@mapNotNull null
             Transfer(
                 id = o.optString("id", ""),
@@ -272,7 +272,7 @@ class LagosClient(
         if (res.code != 200) throw ApiException(res.code, "Claim failed (${res.code})")
         val j = JSONObject(res.body.ifBlank { "{}" })
         val arr = j.optJSONArray("received") ?: return emptyList()
-        (0 until arr.length()).mapNotNull { i ->
+        return (0 until arr.length()).mapNotNull { i ->
             val o = arr.optJSONObject(i) ?: return@mapNotNull null
             Transfer(
                 id = o.optString("id", ""),

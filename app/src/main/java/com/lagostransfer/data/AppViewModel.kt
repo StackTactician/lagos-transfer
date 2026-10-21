@@ -34,6 +34,8 @@ class UiState {
 }
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
+    private val app: Application = application
+
     val accounts = mutableStateListOf<SessionAccount>()
     val uiMap = mutableStateMapOf<String, UiState>()
     var isSyncing by mutableStateOf(true)
@@ -48,12 +50,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     init {
         viewModelScope.launch {
             try {
-                val saved = withContext(Dispatchers.IO) { SecureStore.loadAccounts(application) }
+                val saved = withContext(Dispatchers.IO) { SecureStore.loadAccounts(app) }
                 val pending = saved.mapNotNull { triple ->
                     val u = triple.first; val pp = triple.second; val pin = triple.third
                     if (accounts.any { it.username == u }) null else {
                         val cli = LagosClient(u, pp, pin)
-                        val cookies = withContext(Dispatchers.IO) { SecureStore.loadCookies(application, u) }
+                        val cookies = withContext(Dispatchers.IO) { SecureStore.loadCookies(app, u) }
                         if (cookies.isNotEmpty()) cli.restoreCookies(cookies)
                         val acc = SessionAccount(u, pp, pin, cli)
                         accounts.add(acc)
@@ -64,14 +66,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             } else false
                             if (!ok) {
                                 if (cli.login()) {
-                                    withContext(Dispatchers.IO) { SecureStore.saveCookies(application, u, cli.exportCookies()) }
+                                    withContext(Dispatchers.IO) { SecureStore.saveCookies(app, u, cli.exportCookies()) }
                                 }
                             }
                             try { acc.balance = cli.getBalance() } catch (_: Exception) {}
                             s.balanceText = acc.balance?.let { naira(it.money) } ?: "-"
                             s.canSendText = acc.balance?.canSend?.let { naira(it) } ?: "-"
-                            s.log = withContext(Dispatchers.IO) { LogDb(application).all(u) }
-                            withContext(Dispatchers.IO) { SecureStore.saveCookies(application, u, cli.exportCookies()) }
+                            s.log = withContext(Dispatchers.IO) { LogDb(app).all(u) }
+                            withContext(Dispatchers.IO) { SecureStore.saveCookies(app, u, cli.exportCookies()) }
                         }
                     }
                 }
@@ -93,8 +95,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val acc = SessionAccount(u, password, pin, cli)
         try { acc.balance = cli.getBalance() } catch (_: Exception) {}
         withContext(Dispatchers.IO) {
-            SecureStore.saveAccount(application, u, password, pin)
-            SecureStore.saveCookies(application, u, cli.exportCookies())
+            SecureStore.saveAccount(app, u, password, pin)
+            SecureStore.saveCookies(app, u, cli.exportCookies())
         }
         accounts.add(acc)
         val s = getUi(u)
@@ -106,7 +108,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun removeAccount(username: String) {
         stopSend(username)
-        viewModelScope.launch(Dispatchers.IO) { SecureStore.removeAccount(application, username) }
+        viewModelScope.launch(Dispatchers.IO) { SecureStore.removeAccount(app, username) }
         accounts.removeAll { it.username == username }
         uiMap.remove(username)
     }
@@ -122,7 +124,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 acc.balance = b
                 s.balanceText = naira(b.money)
                 s.canSendText = b.canSend?.let { naira(it) } ?: "-"
-                withContext(Dispatchers.IO) { SecureStore.saveCookies(application, username, acc.client.exportCookies()) }
+                withContext(Dispatchers.IO) { SecureStore.saveCookies(app, username, acc.client.exportCookies()) }
             } catch (e: Exception) {
                 s.lastError = friendlyError(e)
             } finally {
@@ -153,7 +155,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val got = acc.client.claimIncoming()
                 val total = got.sumOf { it.amount }
-                withContext(Dispatchers.IO) { SecureStore.saveCookies(application, username, acc.client.exportCookies()) }
+                withContext(Dispatchers.IO) { SecureStore.saveCookies(app, username, acc.client.exportCookies()) }
                 try {
                     acc.balance = acc.client.getBalance()
                     s.balanceText = naira(acc.balance!!.money)
@@ -189,10 +191,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         jobs[username] = viewModelScope.launch {
             try {
                 try {
-                    ContextCompat.startForegroundService(application, Intent(application, KeepAliveService::class.java))
+                    ContextCompat.startForegroundService(app, Intent(app, KeepAliveService::class.java))
                 } catch (_: Exception) {
                 }
-                val db = LogDb(application)
+                val db = LogDb(app)
                 val runner = TransferRunner(acc.client)
                 runner.run(
                     recipient = recipient,
@@ -207,7 +209,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     acc.balance = acc.client.getBalance()
                     s.balanceText = naira(acc.balance!!.money)
                     s.canSendText = acc.balance?.canSend?.let { naira(it) } ?: "-"
-                    withContext(Dispatchers.IO) { SecureStore.saveCookies(application, username, acc.client.exportCookies()) }
+                    withContext(Dispatchers.IO) { SecureStore.saveCookies(app, username, acc.client.exportCookies()) }
                 } catch (_: Exception) {
                 }
                 loadIncoming(username)
@@ -215,8 +217,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 s.lastError = friendlyError(e)
                 s.log = listOf("Error - ${friendlyError(e)}") + s.log
             } finally {
-                try { application.stopService(Intent(application, KeepAliveService::class.java)) } catch (_: Exception) {}
-                TransferNotify.clearAll(application, listOf(username))
+                try { app.stopService(Intent(app, KeepAliveService::class.java)) } catch (_: Exception) {}
+                TransferNotify.clearAll(app, listOf(username))
                 s.busy = false
                 s.status = ""
                 s.log = db2(username)
@@ -226,7 +228,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun db2(username: String): List<String> =
-        withContext(Dispatchers.IO) { LogDb(application).all(username) }
+        withContext(Dispatchers.IO) { LogDb(app).all(username) }
 
     fun stopSend(username: String) {
         stops[username]?.set(true)
@@ -259,14 +261,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     (if (step.id != null) " - ${step.id.takeLast(6)}" else " (recovered)")
                 s.log = listOf(line) + s.log.take(100)
                 TransferNotify.showProgress(
-                    application, username, s.sent, s.total, amount,
+                    app, username, s.sent, s.total, amount,
                     "Sent ${s.sent}/${s.total}" + if (step.fee > 0) " · fee ${naira(step.fee)}" else ""
                 )
             }
             is RunStep.Skipped -> {
                 s.status = "Failed ${step.index} - ${step.reason}"
                 s.log = listOf("Failed ${step.index}/${s.total} - ${step.reason}") + s.log.take(100)
-                TransferNotify.showError(application, username, step.reason)
+                TransferNotify.showError(app, username, step.reason)
                 withContext(Dispatchers.IO) {
                     db.insert(username, recipient, amount, "failed", step.index - 1, s.total - step.index, amount * (s.total - step.index))
                 }
@@ -275,7 +277,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 s.status = step.reason
                 s.lastError = step.reason
                 s.log = listOf(step.reason) + s.log.take(100)
-                TransferNotify.showError(application, username, step.reason)
+                TransferNotify.showError(app, username, step.reason)
                 withContext(Dispatchers.IO) {
                     db.insert(username, recipient, amount, "failed", s.sent, s.total - s.sent, amount * (s.total - s.sent))
                 }
