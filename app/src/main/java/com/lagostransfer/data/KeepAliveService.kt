@@ -15,7 +15,7 @@ class KeepAliveService : Service() {
         val pm = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "EkoAza::keep").apply {
             setReferenceCounted(false)
-            acquire(30 * 60 * 1000L)
+            acquire(4 * 60 * 60 * 1000L)
         }
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

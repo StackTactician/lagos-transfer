@@ -28,6 +28,7 @@ class UiState {
     var canSendText by mutableStateOf("-")
     var log by mutableStateOf(listOf<String>())
     var sent by mutableStateOf(0)
+    var sentVolume by mutableStateOf(0L)
     var total by mutableStateOf(0)
     var incoming by mutableStateOf(listOf<Transfer>())
     var ledger by mutableStateOf(listOf<Transfer>())
@@ -152,7 +153,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         uiMap.remove(username)
     }
 
-    fun refreshBalance(username: String) {
+    fun refreshBalance(username: String, onError: ((String) -> Unit)? = null) {
         val acc = accounts.find { it.username == username } ?: return
         val s = getUi(username)
         viewModelScope.launch {
@@ -166,6 +167,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 withContext(Dispatchers.IO) { SecureStore.saveCookies(app, username, acc.client.exportCookies()) }
             } catch (e: Exception) {
                 s.lastError = friendlyError(e)
+                onError?.invoke(s.lastError)
             } finally {
                 s.refreshing = false
             }
@@ -189,7 +191,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Claims every transfer waiting for this account. Returns how much was claimed. */
-    fun claimIncoming(username: String, onDone: (Long) -> Unit) {
+    fun claimIncoming(username: String, onDone: (Long, String) -> Unit) {
         val acc = accounts.find { it.username == username } ?: return
         val s = getUi(username)
         viewModelScope.launch {
@@ -205,10 +207,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val list = acc.client.ledger()
                 s.ledger = list.take(30)
                 s.incoming = list.filter { it.waiting }
-                onDone(total)
+                onDone(total, "")
             } catch (e: Exception) {
                 s.lastError = friendlyError(e)
-                onDone(0)
+                onDone(0L, s.lastError)
             } finally {
                 s.refreshing = false
             }
@@ -311,6 +313,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             is RunStep.Sent -> {
                 licence = License.addSent(app, amount)
                 s.sent = s.sent + 1
+                s.sentVolume = s.sentVolume + amount
                 s.total = s.total.coerceAtLeast(step.index)
                 s.status = "Sent ${s.sent} of ${s.total}"
                 val line = "${s.sent}/${s.total} · ${naira(amount)} → @$recipient" +

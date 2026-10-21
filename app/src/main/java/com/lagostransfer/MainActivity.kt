@@ -203,6 +203,20 @@ fun ActivationScreen(vm: AppViewModel, snacks: SnackbarHostState) {
                 modifier = Modifier.fillMaxWidth(),
                 onClick = { showSales = true }
             ) { Text("Don't have a code?") }
+            OutlinedButton(
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    vm.reloadLicence { st ->
+                        scope.launch {
+                            snacks.showSnackbar(
+                                if (st.licensed) "This phone is licensed"
+                                else "No licence on this phone - trial used ${naira(st.trialVolume)}"
+                            )
+                        }
+                    }
+                }
+            ) { Text("Check licence") }
             Text("Device ${licence.deviceId.take(8)}", style = MaterialTheme.typography.labelSmall)
         }
         if (busy) {
@@ -524,7 +538,9 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(onClick = { onSelect(acc.username) }) { Text("Open") }
-                            OutlinedButton(onClick = { vm.refreshBalance(acc.username) }) { Text("Refresh") }
+                            OutlinedButton(onClick = {
+                                vm.refreshBalance(acc.username) { err -> snacks.showSnackbar("Refresh failed - $err") }
+                            }) { Text("Refresh") }
                             TextButton(onClick = { vm.removeAccount(acc.username) }) { Text("Log out") }
                         }
                     }
@@ -568,7 +584,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
                     Text(ui.balanceText, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
                     Text("Balance", style = MaterialTheme.typography.labelSmall)
                     Divider()
-                    Text("Can send today: ${ui.canSendText}", style = MaterialTheme.typography.bodySmall)
+                    Text("Sent from this account: ${naira(ui.sentVolume)}", style = MaterialTheme.typography.bodySmall)
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Switch(checked = acc.enabled, onCheckedChange = { acc.enabled = it })
                         Text(if (acc.enabled) "Sending on" else "Paused", fontWeight = FontWeight.SemiBold)
@@ -621,9 +637,13 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
                             Text("@${t2.who} sent ${naira(t2.amount)}", style = MaterialTheme.typography.labelSmall)
                         }
                         Button(onClick = {
-                            vm.claimIncoming(acc.username) { got ->
+                            vm.claimIncoming(acc.username) { got, err ->
                                 scope.launch {
-                                    if (got > 0) snacks.showSnackbar("Claimed ${naira(got)}") else snacks.showSnackbar("Nothing to claim")
+                                    when {
+                                        err.isNotBlank() -> snacks.showSnackbar("Claim failed - $err")
+                                        got > 0 -> snacks.showSnackbar("Claimed ${naira(got)}")
+                                        else -> snacks.showSnackbar("Nothing to claim")
+                                    }
                                 }
                             }
                         }, modifier = Modifier.fillMaxWidth()) { Text("Claim incoming money") }

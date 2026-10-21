@@ -146,6 +146,13 @@ object License {
     private fun writeReceipt(ctx: Context, blob: ByteArray) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
         try {
+            // overwrite the receipt we already have, do not fill the folder with copies
+            val known = prefs(ctx).getString(K_RECEIPT_URI, null)
+            if (known != null) {
+                val uri = android.net.Uri.parse(known)
+                val wrote = ctx.contentResolver.openOutputStream(uri, "wt")?.use { it.write(blob) }
+                if (wrote != null) return
+            }
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, RECEIPT_NAME)
                 put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
