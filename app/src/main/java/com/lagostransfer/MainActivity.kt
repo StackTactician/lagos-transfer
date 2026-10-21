@@ -539,7 +539,7 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(onClick = { onSelect(acc.username) }) { Text("Open") }
                             OutlinedButton(onClick = {
-                                vm.refreshBalance(acc.username) { err -> snacks.showSnackbar("Refresh failed - $err") }
+                                vm.refreshBalance(acc.username) { err -> scope.launch { snacks.showSnackbar("Refresh failed - $err") } }
                             }) { Text("Refresh") }
                             TextButton(onClick = { vm.removeAccount(acc.username) }) { Text("Log out") }
                         }
