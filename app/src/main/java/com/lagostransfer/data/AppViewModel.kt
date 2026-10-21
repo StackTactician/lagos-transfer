@@ -1,6 +1,7 @@
 package com.lagostransfer.data
 
 import android.app.Application
+import android.content.Intent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -8,6 +9,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.core.content.ContextCompat
 import com.lagostransfer.SessionAccount
 import com.lagostransfer.naira
 import kotlinx.coroutines.Dispatchers
@@ -25,22 +27,29 @@ class UiState {
     var balanceText by mutableStateOf("-")
     var canSendText by mutableStateOf("-")
     var log by mutableStateOf(listOf<String>())
-    var job: Job? by mutableStateOf(null)
-    val stop = AtomicBoolean(false)
+    var sent by mutableStateOf(0)
+    var total by mutableStateOf(0)
+    var incoming by mutableStateOf(listOf<Transfer>())
+    var lastError by mutableStateOf("")
 }
 
-class AppViewModel(private val application: Application) : AndroidViewModel(application) {
+class AppViewModel(application: Application) : AndroidViewModel(application) {
     val accounts = mutableStateListOf<SessionAccount>()
     val uiMap = mutableStateMapOf<String, UiState>()
     var isSyncing by mutableStateOf(true)
-    var serviceOn by mutableStateOf(false)
+
+    private val jobs = mutableMapOf<String, Job>()
+    private val stops = mutableMapOf<String, AtomicBoolean>()
+
     fun getUi(u: String) = uiMap.getOrPut(u) { UiState() }
+
+    fun isRunning(u: String): Boolean = jobs[u]?.isActive == true
 
     init {
         viewModelScope.launch {
             try {
                 val saved = withContext(Dispatchers.IO) { SecureStore.loadAccounts(application) }
-                val jobs = saved.mapNotNull { triple ->
+                val pending = saved.mapNotNull { triple ->
                     val u = triple.first; val pp = triple.second; val pin = triple.third
                     if (accounts.any { it.username == u }) null else {
                         val cli = LagosClient(u, pp, pin)
@@ -50,9 +59,15 @@ class AppViewModel(private val application: Application) : AndroidViewModel(appl
                         accounts.add(acc)
                         val s = getUi(u)
                         async(Dispatchers.IO) {
-                            val ok = if (cli.hasSession()) try { withContext(Dispatchers.IO) { cli.getBalance() }; true } catch (_: Exception) { false } else false
-                            if (!ok) { val re = withContext(Dispatchers.IO) { cli.login() }; if (re) withContext(Dispatchers.IO) { SecureStore.saveCookies(application, u, cli.exportCookies()) } }
-                            try { acc.balance = withContext(Dispatchers.IO) { cli.getBalance() } } catch (_: Exception) {}
+                            val ok = if (cli.hasSession()) {
+                                try { cli.getBalance(); true } catch (_: Exception) { false }
+                            } else false
+                            if (!ok) {
+                                if (cli.login()) {
+                                    withContext(Dispatchers.IO) { SecureStore.saveCookies(application, u, cli.exportCookies()) }
+                                }
+                            }
+                            try { acc.balance = cli.getBalance() } catch (_: Exception) {}
                             s.balanceText = acc.balance?.let { naira(it.money) } ?: "-"
                             s.canSendText = acc.balance?.canSend?.let { naira(it) } ?: "-"
                             s.log = withContext(Dispatchers.IO) { LogDb(application).all(u) }
@@ -60,8 +75,222 @@ class AppViewModel(private val application: Application) : AndroidViewModel(appl
                         }
                     }
                 }
-                jobs.forEach { try { it.await() } catch (_: Exception) {} }
-            } catch (_: Exception) {} finally { isSyncing = false }
+                pending.forEach { try { it.await() } catch (_: Exception) {} }
+            } catch (_: Exception) {
+            } finally {
+                isSyncing = false
+            }
         }
+    }
+
+    /** Adds an account and stores it encrypted. Returns an error message, or null on success. */
+    suspend fun addAccount(username: String, password: String, pin: String?): String? {
+        val u = username.trim()
+        if (u.isEmpty() || password.isEmpty()) return "Username and password are needed"
+        if (accounts.any { it.username == u }) return "Account @$u already added"
+        val cli = LagosClient(u, password, pin)
+        if (!cli.login()) return "Could not log in - check username and password"
+        val acc = SessionAccount(u, password, pin, cli)
+        try { acc.balance = cli.getBalance() } catch (_: Exception) {}
+        withContext(Dispatchers.IO) {
+            SecureStore.saveAccount(application, u, password, pin)
+            SecureStore.saveCookies(application, u, cli.exportCookies())
+        }
+        accounts.add(acc)
+        val s = getUi(u)
+        s.balanceText = acc.balance?.let { naira(it.money) } ?: "-"
+        s.canSendText = acc.balance?.canSend?.let { naira(it) } ?: "-"
+        loadIncoming(u)
+        return null
+    }
+
+    fun removeAccount(username: String) {
+        stopSend(username)
+        viewModelScope.launch(Dispatchers.IO) { SecureStore.removeAccount(application, username) }
+        accounts.removeAll { it.username == username }
+        uiMap.remove(username)
+    }
+
+    fun refreshBalance(username: String) {
+        val acc = accounts.find { it.username == username } ?: return
+        val s = getUi(username)
+        viewModelScope.launch {
+            s.refreshing = true
+            try {
+                if (!acc.client.hasSession()) acc.client.login()
+                val b = acc.client.getBalance()
+                acc.balance = b
+                s.balanceText = naira(b.money)
+                s.canSendText = b.canSend?.let { naira(it) } ?: "-"
+                withContext(Dispatchers.IO) { SecureStore.saveCookies(application, username, acc.client.exportCookies()) }
+            } catch (e: Exception) {
+                s.lastError = friendlyError(e)
+            } finally {
+                s.refreshing = false
+            }
+        }
+    }
+
+    /** Loads money that is waiting in escrow for this account to claim it. */
+    fun loadIncoming(username: String) {
+        val acc = accounts.find { it.username == username } ?: return
+        val s = getUi(username)
+        viewModelScope.launch {
+            try {
+                val list = acc.client.ledger().filter { it.waiting }
+                s.incoming = list
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /** Claims every transfer waiting for this account. Returns how much was claimed. */
+    fun claimIncoming(username: String, onDone: (Long) -> Unit) {
+        val acc = accounts.find { it.username == username } ?: return
+        val s = getUi(username)
+        viewModelScope.launch {
+            s.refreshing = true
+            try {
+                val got = acc.client.claimIncoming()
+                val total = got.sumOf { it.amount }
+                withContext(Dispatchers.IO) { SecureStore.saveCookies(application, username, acc.client.exportCookies()) }
+                try {
+                    acc.balance = acc.client.getBalance()
+                    s.balanceText = naira(acc.balance!!.money)
+                } catch (_: Exception) {}
+                s.incoming = acc.client.ledger().filter { it.waiting }
+                onDone(total)
+            } catch (e: Exception) {
+                s.lastError = friendlyError(e)
+                onDone(0)
+            } finally {
+                s.refreshing = false
+            }
+        }
+    }
+
+    /**
+     * Starts a send run for one account. Runs in the view model, so it keeps going
+     * when the user leaves the page and several accounts can send at the same time.
+     */
+    fun startSend(username: String, recipient: String, amount: Long, times: Int, note: String?) {
+        val acc = accounts.find { it.username == username } ?: return
+        val s = getUi(username)
+        if (jobs[username]?.isActive == true) return
+        val stopFlag = AtomicBoolean(false)
+        stops[username] = stopFlag
+        s.busy = true
+        s.log = emptyList()
+        s.status = "Starting"
+        s.sent = 0
+        s.total = times
+        s.lastError = ""
+
+        jobs[username] = viewModelScope.launch {
+            try {
+                try {
+                    ContextCompat.startForegroundService(application, Intent(application, KeepAliveService::class.java))
+                } catch (_: Exception) {
+                }
+                val db = LogDb(application)
+                val runner = TransferRunner(acc.client)
+                runner.run(
+                    recipient = recipient,
+                    amount = amount,
+                    times = times,
+                    note = note,
+                    stop = { stopFlag.get() },
+                    paused = { !acc.enabled },
+                    emit = { step -> onStep(username, acc, db, step, recipient, amount) }
+                )
+                try {
+                    acc.balance = acc.client.getBalance()
+                    s.balanceText = naira(acc.balance!!.money)
+                    s.canSendText = acc.balance?.canSend?.let { naira(it) } ?: "-"
+                    withContext(Dispatchers.IO) { SecureStore.saveCookies(application, username, acc.client.exportCookies()) }
+                } catch (_: Exception) {
+                }
+                loadIncoming(username)
+            } catch (e: Exception) {
+                s.lastError = friendlyError(e)
+                s.log = listOf("Error - ${friendlyError(e)}") + s.log
+            } finally {
+                try { application.stopService(Intent(application, KeepAliveService::class.java)) } catch (_: Exception) {}
+                TransferNotify.clearAll(application, listOf(username))
+                s.busy = false
+                s.status = ""
+                s.log = db2(username)
+                stops.remove(username)
+            }
+        }
+    }
+
+    private suspend fun db2(username: String): List<String> =
+        withContext(Dispatchers.IO) { LogDb(application).all(username) }
+
+    fun stopSend(username: String) {
+        stops[username]?.set(true)
+        getUi(username).status = "Stopping"
+    }
+
+    private suspend fun onStep(
+        username: String,
+        acc: SessionAccount,
+        db: LogDb,
+        step: RunStep,
+        recipient: String,
+        amount: Long
+    ) {
+        val s = getUi(username)
+        when (step) {
+            is RunStep.Status -> {
+                s.status = step.text
+                s.log = listOf(step.text) + s.log.take(100)
+            }
+            is RunStep.Balance -> {
+                acc.balance = Balance(step.money, acc.balance?.canSend, acc.balance?.hasGame ?: true)
+                s.balanceText = naira(step.money)
+            }
+            is RunStep.Sent -> {
+                s.sent = s.sent + 1
+                s.total = s.total.coerceAtLeast(step.index)
+                s.status = "Sent ${s.sent} of ${s.total}"
+                val line = "Sent ${s.sent}/${s.total} ${naira(amount)} to @$recipient" +
+                    (if (step.id != null) " - ${step.id.takeLast(6)}" else " (recovered)")
+                s.log = listOf(line) + s.log.take(100)
+                TransferNotify.showProgress(
+                    application, username, s.sent, s.total, amount,
+                    "Sent ${s.sent}/${s.total}" + if (step.fee > 0) " · fee ${naira(step.fee)}" else ""
+                )
+            }
+            is RunStep.Skipped -> {
+                s.status = "Failed ${step.index} - ${step.reason}"
+                s.log = listOf("Failed ${step.index}/${s.total} - ${step.reason}") + s.log.take(100)
+                TransferNotify.showError(application, username, step.reason)
+                withContext(Dispatchers.IO) {
+                    db.insert(username, recipient, amount, "failed", step.index - 1, s.total - step.index, amount * (s.total - step.index))
+                }
+            }
+            is RunStep.Halted -> {
+                s.status = step.reason
+                s.lastError = step.reason
+                s.log = listOf(step.reason) + s.log.take(100)
+                TransferNotify.showError(application, username, step.reason)
+                withContext(Dispatchers.IO) {
+                    db.insert(username, recipient, amount, "failed", s.sent, s.total - s.sent, amount * (s.total - s.sent))
+                }
+            }
+        }
+    }
+}
+
+fun friendlyError(e: Throwable): String {
+    val m = e.message ?: ""
+    return when {
+        "Unable to resolve host" in m || "No address" in m -> "No internet - check connection"
+        "timeout" in m.lowercase() -> "Network timeout - retrying"
+        m.contains("401") || m.contains("Session expired") -> "Session expired - logging in again"
+        m.contains("429") -> "Too many tries - waiting"
+        else -> m.take(80).ifBlank { "Something went wrong" }
     }
 }

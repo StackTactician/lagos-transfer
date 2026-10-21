@@ -26,8 +26,6 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.lagostransfer.data.*
 import com.lagostransfer.ui.theme.LagosTransferTheme
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -36,17 +34,6 @@ import java.util.Locale
 
 val nairaFmt by lazy { NumberFormat.getNumberInstance(Locale("en", "NG")) }
 fun naira(v: Long): String = "₦" + nairaFmt.format(v)
-
-private fun friendly(e: Exception): String {
-    val m = e.message ?: ""
-    return when {
-        "Unable to resolve host" in m || "No address" in m -> "No internet - check connection"
-        "timeout" in m.lowercase() -> "Network timeout - retrying"
-        m.contains("401") || m.contains("Session expired") -> "Session expired - logging in again"
-        m.contains("429") -> "Too many tries - waiting"
-        else -> m.take(80).ifBlank { "Something went wrong" }
-    }
-}
 
 data class SessionAccount(
     val username: String,
@@ -87,8 +74,6 @@ fun App() {
     val accounts = vm.accounts
     var selected by remember { mutableStateOf<String?>(null) }
     val isSyncing = vm.isSyncing
-    val ctxApp = LocalContext.current
-    fun getUi(u: String) = vm.getUi(u)
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -110,7 +95,11 @@ fun App() {
                     Text("  No accounts yet", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(16.dp))
                 } else {
                     accounts.forEach { acc ->
-                        NavigationDrawerItem(label = { Text("@${acc.username}") }, selected = selected == acc.username, onClick = { selected = acc.username; scope.launch { drawerState.close() } })
+                        NavigationDrawerItem(
+                            label = { Text("@${acc.username}" + if (vm.isRunning(acc.username)) " •" else "") },
+                            selected = selected == acc.username,
+                            onClick = { selected = acc.username; scope.launch { drawerState.close() } }
+                        )
                     }
                 }
             }
@@ -129,11 +118,11 @@ fun App() {
         ) { pad ->
             Box(Modifier.padding(pad)) {
                 when (selected) {
-                    null -> MasterPage(accounts, snackbarHost, onSelect = { selected = it })
+                    null -> MasterPage(vm, snackbarHost, onSelect = { selected = it })
                     "history" -> HistoryPage()
                     else -> {
                         val acc = accounts.find { it.username == selected }
-                        if (acc == null) MasterPage(accounts, snackbarHost, onSelect = { selected = it })
+                        if (acc == null) MasterPage(vm, snackbarHost, onSelect = { selected = it })
                         else AccountPage(acc, snackbarHost, vm)
                     }
                 }
@@ -146,8 +135,9 @@ fun App() {
 }
 
 @Composable
-fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState, onSelect: (String) -> Unit) {
+fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -> Unit) {
     val ctx = LocalContext.current
+    val accounts = vm.accounts
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") }
@@ -215,7 +205,7 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
                                                 }
                                                 delay(500)
                                             }
-                                        } catch (e: Exception) { snacks.showSnackbar(friendly(e as Exception)) }
+                                        } catch (e: Exception) { snacks.showSnackbar(friendlyError(e)) }
                                         updating = false
                                     }
                                 }) { Text(if (updating) "Downloading" else "Update now") }
@@ -243,30 +233,21 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
                 enabled = !busy && username.isNotBlank() && password.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
                 onClick = {
-                    if (accounts.any { it.username == username.trim() }) {
-                        scope.launch { snacks.showSnackbar("Account @${username.trim()} already added") }
+                    val u = username.trim()
+                    if (accounts.any { it.username == u }) {
+                        scope.launch { snacks.showSnackbar("Account @$u already added") }
                         return@Button
                     }
                     busy = true
                     scope.launch {
-                        val cli = LagosClient(username.trim(), password, pin.ifBlank { null })
-                        val ok = try { cli.login() } catch (e: Exception) { false }
-                        if (!ok) {
-                            snacks.showSnackbar("Could not log in - check username and password")
-                            busy = false
-                            return@launch
+                        val err = vm.addAccount(u, password, pin.ifBlank { null })
+                        if (err != null) {
+                            snacks.showSnackbar(err)
+                        } else {
+                            val bal = vm.accounts.find { it.username == u }?.balance
+                            snacks.showSnackbar("Logged in @$u" + (bal?.let { " - ${naira(it.money)}" } ?: ""))
+                            username = ""; password = ""; pin = ""
                         }
-                        val acc = SessionAccount(username.trim(), password, pin.ifBlank { null }, cli)
-                        var balText = ""
-                        try {
-                            acc.balance = cli.getBalance()
-                            balText = " - ${naira(acc.balance!!.money)}"
-                        } catch (_: Exception) {}
-                        SecureStore.saveAccount(ctx, acc.username, acc.password, acc.pin)
-                        SecureStore.saveCookies(ctx, acc.username, cli.exportCookies())
-                        accounts.add(acc)
-                        snacks.showSnackbar("Logged in @${acc.username}$balText")
-                        username = ""; password = ""; pin = ""
                         busy = false
                     }
                 }
@@ -275,31 +256,32 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
         item { Divider() }
         item { Text("Accounts (${accounts.size})", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold) }
         if (accounts.isEmpty()) {
-            item { Text("No accounts yet. Add one above. Each account gets its own tab.", style = MaterialTheme.typography.bodySmall) }
+            item { Text("No accounts yet. Add one above. Each account sends on its own clock.", style = MaterialTheme.typography.bodySmall) }
         } else {
             items(accounts, key = { it.username }) { acc ->
+                val ui = vm.uiMap[acc.username]
                 ElevatedCard(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text("@${acc.username}", fontWeight = FontWeight.Bold)
-                            Badge { Text(if (acc.enabled) "ON" else "OFF") }
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                if (vm.isRunning(acc.username)) Badge { Text("SENDING") }
+                                Badge { Text(if (acc.enabled) "ON" else "OFF") }
+                            }
                         }
                         Text(
                             acc.balance?.let { "${naira(it.money)}  -  Can send ${it.canSend?.let { c -> naira(c) } ?: "unknown"}" } ?: "Tap refresh for balance",
                             style = MaterialTheme.typography.bodySmall
                         )
+                        if (ui != null && ui.busy) {
+                            Text(ui.status.ifBlank { "Sending..." }, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(4.dp))
+                            Text("${ui.sent}/${ui.total} sent", style = MaterialTheme.typography.labelSmall)
+                        }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(onClick = { onSelect(acc.username) }) { Text("Open") }
-                            OutlinedButton(onClick = {
-                                scope.launch {
-                                    try {
-                                        acc.balance = acc.client.getBalance()
-                                        SecureStore.saveCookies(ctx, acc.username, acc.client.exportCookies())
-                                        snacks.showSnackbar("@${acc.username} - ${naira(acc.balance!!.money)}")
-                                    } catch (e: Exception) { snacks.showSnackbar(friendly(e as Exception)) }
-                                }
-                            }) { Text("Refresh") }
-                            TextButton(onClick = { SecureStore.removeAccount(ctx, acc.username); accounts.remove(acc) }) { Text("Log out") }
+                            OutlinedButton(onClick = { vm.refreshBalance(acc.username) }) { Text("Refresh") }
+                            TextButton(onClick = { vm.removeAccount(acc.username) }) { Text("Log out") }
                         }
                     }
                 }
@@ -309,104 +291,96 @@ fun MasterPage(accounts: MutableList<SessionAccount>, snacks: SnackbarHostState,
 }
 
 @Composable
-fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel? = null) {
+fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel) {
     val ctx = LocalContext.current
-    val db = remember { LogDb(ctx) }
     val scope = rememberCoroutineScope()
+    val ui = vm.uiMap[acc.username]
+    if (ui == null) {
+        Text("Loading account...")
+        return
+    }
     var recipient by remember { mutableStateOf("") }
-    var resolvedName by remember { mutableStateOf("") }
+    var resolved by remember { mutableStateOf("") }
     var amount by remember { mutableStateOf("10000000000") }
     var times by remember { mutableStateOf("1") }
     var note by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
-    var refreshing by remember { mutableStateOf(false) }
-    var currentJob by remember { mutableStateOf<Job?>(null) }
-    val stopFlag = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
-    var log by remember { mutableStateOf(db.all(acc.username)) }
-    var balanceText by remember { mutableStateOf(acc.balance?.let { naira(it.money) } ?: "-") }
-    var canSendText by remember { mutableStateOf(acc.balance?.canSend?.let { naira(it) } ?: "-") }
-    var statusText by remember { mutableStateOf("") }
-
-    fun add(s: String) { log = listOf(s) + log.take(100) }
-
-    acc.client.onAuthLost = {
-        scope.launch {
-            if (acc.client.login()) {
-                SecureStore.saveCookies(ctx, acc.username, acc.client.exportCookies())
-                snacks.showSnackbar("Session restored")
-            } else {
-                acc.enabled = false
-                snacks.showSnackbar("Session lost - log in again from Master")
-            }
-        }
-    }
 
     LaunchedEffect(acc.username) {
-        if (acc.balance == null) {
-            refreshing = true
-            try {
-                if (!acc.client.hasSession()) acc.client.login()
-                acc.balance = acc.client.getBalance()
-                SecureStore.saveCookies(ctx, acc.username, acc.client.exportCookies())
-            } catch (_: Exception) {}
-            refreshing = false
-        }
-        balanceText = acc.balance?.let { naira(it.money) } ?: "-"
-        canSendText = acc.balance?.canSend?.let { naira(it) } ?: "-"
-        log = withContext(Dispatchers.IO) { db.all(acc.username) }
+        vm.refreshBalance(acc.username)
+        vm.loadIncoming(acc.username)
     }
+
+    val amt = amount.toLongOrNull() ?: 0L
+    val t = times.toIntOrNull() ?: 0
+    val fee = LagosClient.feeFor(amt)
+    val canSendNow = amt in LagosClient.MIN_SEND..LagosClient.MAX_SEND && t in 1..999 && recipient.isNotBlank()
 
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             ElevatedCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("@${acc.username}", fontWeight = FontWeight.Black, style = MaterialTheme.typography.titleMedium)
-                    Text(balanceText, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
+                    Text(ui.balanceText, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
                     Text("Balance", style = MaterialTheme.typography.labelSmall)
                     Divider()
-                    Text("Can send today: $canSendText", style = MaterialTheme.typography.bodySmall)
+                    Text("Can send today: ${ui.canSendText}", style = MaterialTheme.typography.bodySmall)
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Transfers")
                         Switch(checked = acc.enabled, onCheckedChange = { acc.enabled = it })
                         Text(if (acc.enabled) "Enabled" else "Paused", fontWeight = FontWeight.SemiBold)
                     }
-                    OutlinedButton(enabled = !refreshing, onClick = {
-                        scope.launch {
-                            refreshing = true
-                            try {
-                                if (!acc.client.hasSession()) acc.client.login()
-                                val b = acc.client.getBalance()
-                                acc.balance = b
-                                balanceText = naira(b.money)
-                                canSendText = b.canSend?.let { naira(it) } ?: "-"
-                                withContext(Dispatchers.IO) { SecureStore.saveCookies(ctx, acc.username, acc.client.exportCookies()) }
-                            } catch (e: Exception) { snacks.showSnackbar(friendly(e as Exception)) } finally { refreshing = false }
+                    OutlinedButton(enabled = !ui.refreshing, onClick = { vm.refreshBalance(acc.username) }) {
+                        if (ui.refreshing) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp) else Text("Refresh balance")
+                    }
+                }
+            }
+        }
+        if (ui.incoming.isNotEmpty()) {
+            item {
+                ElevatedCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Waiting to be claimed", fontWeight = FontWeight.Bold)
+                        Text(
+                            "${ui.incoming.size} transfer(s) - ${naira(ui.incoming.sumOf { it.amount })} is held by the server until it is claimed.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        ui.incoming.take(5).forEach { t2 ->
+                            Text("@${t2.who} sent ${naira(t2.amount)}", style = MaterialTheme.typography.labelSmall)
                         }
-                    }) { if (refreshing) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp) else Text("Refresh balance") }
+                        Button(onClick = {
+                            vm.claimIncoming(acc.username) { got ->
+                                scope.launch {
+                                    if (got > 0) snacks.showSnackbar("Claimed ${naira(got)}") else snacks.showSnackbar("Nothing to claim")
+                                }
+                            }
+                        }, modifier = Modifier.fillMaxWidth()) { Text("Claim incoming money") }
+                    }
                 }
             }
         }
         item {
             Text("Send money", fontWeight = FontWeight.Bold)
-            Text("Single recipient - 32s between sends - retries on drop", style = MaterialTheme.typography.labelSmall)
+            Text("One recipient per run - 32s between sends - a lost connection is checked with the server before any retry", style = MaterialTheme.typography.labelSmall)
         }
         item {
-            OutlinedTextField(recipient, { recipient = it.trim(); resolvedName = "" }, label = { Text("Recipient username") }, placeholder = { Text("e.g. adewale") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            OutlinedTextField(recipient, { recipient = it.trim(); resolved = "" }, label = { Text("Recipient username") }, placeholder = { Text("e.g. adewale") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
-                    enabled = recipient.isNotBlank() && !busy,
+                    enabled = recipient.isNotBlank() && !ui.busy,
                     onClick = {
                         scope.launch {
                             try {
-                                val id = acc.client.resolveUsername(recipient)
-                                if (id == null) { resolvedName = ""; snacks.showSnackbar("No user @$recipient") }
-                                else { resolvedName = id }
-                            } catch (e: Exception) { snacks.showSnackbar(friendly(e as Exception)) }
+                                when (val l = acc.client.resolveUsername(recipient)) {
+                                    is Lookup.Found -> { resolved = l.id; snacks.showSnackbar("Found @$recipient") }
+                                    Lookup.NotFound -> { resolved = ""; snacks.showSnackbar("No user @$recipient") }
+                                    is Lookup.Failed -> { resolved = ""; snacks.showSnackbar(l.reason) }
+                                }
+                            } catch (e: Exception) { snacks.showSnackbar(friendlyError(e)) }
                         }
                     }
                 ) { Text("Check") }
                 Text(
-                    text = if (resolvedName.isBlank()) "" else "Found @$recipient",
+                    text = if (resolved.isBlank()) "" else "Found @$recipient",
                     style = MaterialTheme.typography.labelSmall
                 )
             }
@@ -421,13 +395,12 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
             )
-            val amt = amount.toLongOrNull() ?: 0
             Text(
                 when {
                     amt == 0L -> ""
-                    amt < 100 -> "Minimum ₦100"
-                    amt > 10_000_000_000 -> "Maximum ₦10,000,000,000"
-                    else -> "Will send ${naira(amt)} per transfer"
+                    amt < LagosClient.MIN_SEND -> "Minimum ${naira(LagosClient.MIN_SEND)}"
+                    amt > LagosClient.MAX_SEND -> "Maximum ${naira(LagosClient.MAX_SEND)}"
+                    else -> "Will send ${naira(amt)} per transfer (${naira(fee)} fee, ${naira(amt + fee)} total)"
                 },
                 style = MaterialTheme.typography.labelSmall
             )
@@ -441,178 +414,34 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
             )
-            val t = times.toIntOrNull() ?: 0
-            val amt = amount.toLongOrNull() ?: 0
-            if (t > 0 && amt in 100..10_000_000_000) {
-                Text("Total ${naira(amt * t)} + fees - ${(t - 1) * 32}s", style = MaterialTheme.typography.labelSmall)
+            if (t > 0 && amt >= LagosClient.MIN_SEND) {
+                Text("Total ${naira(amt * t)} + ${naira(fee * t)} fees - ${(t - 1) * 32}s", style = MaterialTheme.typography.labelSmall)
             }
         }
         item {
-            OutlinedTextField(note, { note = it }, label = { Text("Note (optional)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            OutlinedTextField(note, { note = it }, label = { Text("Note (optional, 3+ characters)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         }
         item {
-            val amt = amount.toLongOrNull() ?: 0
-            val t = times.toIntOrNull() ?: 0
-            val canSendNow = amt in 100..10_000_000_000 && t in 1..999 && recipient.isNotBlank()
-            if (busy) Text(statusText, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
+            if (ui.busy) Text(ui.status, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 Button(
-                    enabled = !busy && acc.enabled && canSendNow,
+                    enabled = !ui.busy && acc.enabled && canSendNow,
                     modifier = Modifier.weight(1f),
-                    onClick = {
-                        stopFlag.set(false)
-                        log = emptyList()
-                        busy = true
-                        val job = scope.launch {
-                            try { ContextCompat.startForegroundService(ctx, Intent(ctx, KeepAliveService::class.java)) } catch (_: Exception) {}
-                            try {
-                                val toId = try { acc.client.resolveUsername(recipient) } catch (_: Exception) { null }
-                                if (toId == null) {
-                                    add("No user @$recipient - check spelling")
-                                    withContext(Dispatchers.IO) { db.insert(acc.username, recipient, amt, "not_found", 0, t, amt.toLong() * t) }
-                                    snacks.showSnackbar("No user @$recipient")
-                                    return@launch
-                                }
-                                TransferNotify.ensureChannel(ctx)
-                                var okCount = 0
-                                var netFails = 0
-                                val startBalance = try { acc.client.getBalance() } catch (_: Exception) { null }
-                                if (startBalance != null) {
-                                    acc.balance = startBalance
-                                    balanceText = naira(startBalance.money)
-                                    canSendText = startBalance.canSend?.let { naira(it) } ?: "-"
-                                }
-                                if (startBalance != null && startBalance.money < amt) {
-                                    withContext(Dispatchers.IO) { db.insert(acc.username, recipient, amt, "insufficient", 0, t, amt.toLong() * t) }
-                                    log = withContext(Dispatchers.IO) { db.all(acc.username) }
-                                    add("Not enough funds - have ${naira(startBalance.money)}")
-                                    TransferNotify.showError(ctx, acc.username, "Not enough funds")
-                                    return@launch
-                                }
-                                for (i in 1..t) {
-                                    if (stopFlag.get()) { add("Stopped at $i/$t"); break }
-                                    if (!acc.enabled) { add("Paused at $i/$t"); break }
-                                    statusText = "Sending $i of $t"
-                                    add("Sending $i/$t ${naira(amt)} to @$recipient")
-                                    TransferNotify.showProgress(ctx, acc.username, i, t, amt, "Sending $i/$t")
-
-                                    if (startBalance != null && startBalance!!.money < amt) {
-                                        val left = t - i + 1
-                                        withContext(Dispatchers.IO) { db.insert(acc.username, recipient, amt, "insufficient", i - 1, left, amt.toLong() * left) }
-                                        log = withContext(Dispatchers.IO) { db.all(acc.username) }
-                                        add("Not enough funds - have ${naira(startBalance!!.money)}")
-                                        TransferNotify.showError(ctx, acc.username, "Not enough funds")
-                                        break
-                                    }
-
-                                    var result: org.json.JSONObject? = null
-                                    var errMsg: String? = null
-                                    var attempt = 0
-                                    val maxRetry = 3
-                                    while (attempt < maxRetry) {
-                                        if (stopFlag.get()) break
-                                        attempt++
-                                        try {
-                                            result = acc.client.sendMoney(toId, amt, note.ifBlank { null })
-                                            errMsg = null
-                                            break
-                                        } catch (e: Exception) {
-                                            errMsg = friendly(e)
-                                            if (e is ApiException && e.code == 401) {
-                                                val relogin = acc.client.login()
-                                                SecureStore.saveCookies(ctx, acc.username, acc.client.exportCookies())
-                                                if (!relogin) { acc.enabled = false; snacks.showSnackbar("Session lost - log in again") }
-                                            }
-                                            if (attempt < maxRetry) {
-                                                statusText = "Retry $attempt/$maxRetry - $errMsg"
-                                                add("Network drop - retry $attempt/$maxRetry")
-                                                TransferNotify.showProgress(ctx, acc.username, i, t, amt, "Retry $attempt/$maxRetry")
-                                                delay(5_000L * attempt)
-                                            }
-                                        }
-                                    }
-
-                                    if (stopFlag.get()) { add("Stopped at $i/$t"); break }
-
-                                    if (errMsg != null) {
-                                        netFails++
-                                        val left = t - i
-                                        withContext(Dispatchers.IO) { db.insert(acc.username, recipient, amt, "failed", i - 1, left + 1, amt.toLong() * (left + 1)) }
-                                        add("Failed $i/$t after $maxRetry retries - $errMsg")
-                                        TransferNotify.showError(ctx, acc.username, errMsg)
-                                        if (netFails >= 3) {
-                                            add("Too many failures - stopping")
-                                            snacks.showSnackbar("Stopped after repeated network failures")
-                                            break
-                                        }
-                                    } else if (result != null) {
-                                        if (result.optBoolean("ok", false)) {
-                                            okCount++
-                                            val left = t - i
-                                            withContext(Dispatchers.IO) { db.insert(acc.username, recipient, amt, "sent", i, left, amt.toLong() * left) }
-                                            add("Sent $i/$t ${naira(amt)} to @$recipient - $left left")
-                                            netFails = 0
-                                        } else {
-                                            val msg = result.optString("error").ifBlank { "Could not send" }
-                                            val nice = when {
-                                                msg.contains("fund", true) -> "Not enough funds"
-                                                msg.contains("limit", true) -> "Daily limit reached"
-                                                msg.contains("frozen", true) -> "Account frozen"
-                                                msg.contains("pin", true) -> "PIN wrong"
-                                                else -> msg.take(80)
-                                            }
-                                            val left = t - i
-                                            withContext(Dispatchers.IO) { db.insert(acc.username, recipient, amt, nice, i - 1, left + 1, amt.toLong() * (left + 1)) }
-                                            add("Failed $i/$t - $nice")
-                                            TransferNotify.showError(ctx, acc.username, nice)
-                                            if (msg.contains("limit", true) || msg.contains("frozen", true)) break
-                                        }
-                                    }
-                                    log = withContext(Dispatchers.IO) { db.all(acc.username) }
-                                    if (i < t && !stopFlag.get()) {
-                                        add("Waiting 32s - next $i/$t done")
-                                        delay(32_000)
-                                    }
-                                }
-                                try {
-                                    val b = acc.client.getBalance()
-                                    acc.balance = b
-                                    balanceText = naira(b.money)
-                                    canSendText = b.canSend?.let { naira(it) } ?: "-"
-                                    SecureStore.saveCookies(ctx, acc.username, acc.client.exportCookies())
-                                } catch (_: Exception) {}
-                                TransferNotify.showDone(ctx, acc.username, okCount, t)
-                                snacks.showSnackbar("Done - $okCount of $t sent to @$recipient")
-                            } catch (e: Exception) {
-                                add("Error - ${friendly(e as Exception)}")
-                                snacks.showSnackbar(friendly(e as Exception))
-                            } finally {
-                                try { ctx.stopService(Intent(ctx, KeepAliveService::class.java)) } catch (_: Exception) {}
-                                TransferNotify.clearAll(ctx, listOf(acc.username))
-                                busy = false
-                                statusText = ""
-                            }
-                        }
-                        currentJob = job
-                    }
+                    onClick = { vm.startSend(acc.username, recipient, amt, t, note.ifBlank { null }) }
                 ) {
-                    val tInt = times.toIntOrNull() ?: 0
-                    Text(if (busy) "Sending - 32s gap" else "Send ${if (tInt > 0) "${tInt}x " else ""}${if (amt > 0) naira(amt) else ""} to @$recipient".trim())
+                    Text(if (ui.busy) "Sending ${ui.sent}/${ui.total}" else "Send ${if (t > 0) "${t}x " else ""}${if (amt > 0) naira(amt) else ""} to @$recipient".trim())
                 }
-                if (busy) {
-                    OutlinedButton(onClick = {
-                        stopFlag.set(true)
-                        currentJob?.cancel()
-                        busy = false
-                        add("Stopped by user")
-                        try { ctx.stopService(Intent(ctx, KeepAliveService::class.java)) } catch (_: Exception) {}
-                    }) { Text("Stop") }
+                if (ui.busy) {
+                    OutlinedButton(onClick = { vm.stopSend(acc.username) }) { Text("Stop") }
                 }
             }
+        }
+        if (ui.lastError.isNotBlank()) {
+            item { Text(ui.lastError, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold) }
         }
         item { Divider() }
         item { Text("Activity", fontWeight = FontWeight.SemiBold) }
-        items(log) { Text(it, style = MaterialTheme.typography.bodySmall) }
+        items(ui.log) { Text(it, style = MaterialTheme.typography.bodySmall) }
     }
 }
 
