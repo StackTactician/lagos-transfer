@@ -17,7 +17,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -150,7 +152,13 @@ fun ActivationScreen(vm: AppViewModel, snacks: SnackbarHostState) {
     val scope = rememberCoroutineScope()
     var code by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    var showSales by remember { mutableStateOf(false) }
     val licence = vm.licence
+
+    if (showSales) {
+        SalesScreen(onBack = { showSales = false }, snacks = snacks)
+        return
+    }
 
     Box(Modifier.fillMaxSize()) {
         Column(
@@ -190,6 +198,11 @@ fun ActivationScreen(vm: AppViewModel, snacks: SnackbarHostState) {
                     }
                 }
             ) { Text("Activate") }
+            OutlinedButton(
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth(),
+                onClick = { showSales = true }
+            ) { Text("Don't have a code?") }
             Text("Device ${licence.deviceId.take(8)}", style = MaterialTheme.typography.labelSmall)
         }
         if (busy) {
@@ -200,6 +213,91 @@ fun ActivationScreen(vm: AppViewModel, snacks: SnackbarHostState) {
                 ) {}
                 CircularProgressIndicator()
             }
+        }
+    }
+}
+
+
+/**
+ * Where somebody without a code goes: the bank details to pay, a short form,
+ * and a button that opens WhatsApp with everything they typed already in the
+ * message so they only have to press send.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SalesScreen(onBack: () -> Unit, snacks: SnackbarHostState) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val clipboard = LocalClipboardManager.current
+    var name by remember { mutableStateOf("") }
+    var contact by remember { mutableStateOf("") }
+    var amount by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf("") }
+
+    val accountNumber = "8123951223"
+    val accountName = "Sunshine Ogbigbe"
+    val bank = "OPay"
+    val whatsappNumber = "2348123951223"
+
+    fun message(): String {
+        val lines = mutableListOf("Hello, I want to activate Eko Aza.")
+        if (name.isNotBlank()) lines.add("Name: $name")
+        if (contact.isNotBlank()) lines.add("Contact: $contact")
+        if (amount.isNotBlank()) lines.add("Amount sent: \u20a6$amount")
+        if (note.isNotBlank()) lines.add("Note: $note")
+        lines.add("Please send the activation code to: $contact")
+        return lines.joinToString("\n")
+    }
+
+    Scaffold(
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = { Text("Get a code", fontWeight = FontWeight.SemiBold) },
+                navigationIcon = { IconButton(onClick = onBack) { Text("\u2190", style = MaterialTheme.typography.titleLarge) } }
+            )
+        }
+    ) { pad ->
+        Column(
+            Modifier.fillMaxSize().padding(pad).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text("Pay to this account, then send us the details", fontWeight = FontWeight.Bold)
+
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(bank, style = MaterialTheme.typography.labelSmall)
+                    Text(accountNumber, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
+                    Text(accountName, style = MaterialTheme.typography.bodyMedium)
+                    OutlinedButton(onClick = {
+                        clipboard.setText(AnnotatedString("$bank - $accountNumber - $accountName"))
+                        scope.launch { snacks.showSnackbar("Bank details copied") }
+                    }) { Text("Copy details") }
+                }
+            }
+
+            Text("Your details", fontWeight = FontWeight.Bold)
+            OutlinedTextField(name, { name = it }, label = { Text("Your name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            OutlinedTextField(contact, { contact = it }, label = { Text("Phone or email") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            OutlinedTextField(amount, { amount = it.filter { c -> c.isDigit() }.take(10) }, label = { Text("Amount you sent") }, prefix = { Text("\u20a6") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            OutlinedTextField(note, { note = it }, label = { Text("Anything else (optional)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+
+            Button(
+                enabled = contact.isNotBlank(),
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    val url = "https://wa.me/$whatsappNumber?text=" + java.net.URLEncoder.encode(message(), "UTF-8")
+                    try {
+                        ctx.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+                    } catch (e: Exception) {
+                        scope.launch { snacks.showSnackbar("WhatsApp is not installed on this phone") }
+                    }
+                }
+            ) { Text("Send me the details on WhatsApp") }
+
+            Text(
+                "We send the activation code to the phone number or email you put above.",
+                style = MaterialTheme.typography.labelSmall
+            )
         }
     }
 }
@@ -366,6 +464,37 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
         }
         item { Divider() }
         item { Text("Accounts (${accounts.size})", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold) }
+        if (accounts.size > 1) {
+            item {
+                ElevatedCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("All accounts at a glance", fontWeight = FontWeight.Bold)
+                        accounts.forEach { acc ->
+                            val ui = vm.uiMap[acc.username]
+                            val running = vm.isRunning(acc.username)
+                            val state = when {
+                                running -> "sending ${ui?.sent ?: 0}/${ui?.total ?: 0}"
+                                !acc.enabled -> "paused"
+                                acc.balance != null -> naira(acc.balance!!.money)
+                                else -> "no balance yet"
+                            }
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("@${acc.username}", fontWeight = FontWeight.SemiBold)
+                                    Text(state, style = MaterialTheme.typography.labelSmall)
+                                }
+                                Switch(checked = acc.enabled, onCheckedChange = { acc.enabled = it })
+                                OutlinedButton(onClick = { onSelect(acc.username) }) { Text("Open") }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if (accounts.isEmpty()) {
             item { Text("No accounts yet. Add one above. Each account sends on its own clock.", style = MaterialTheme.typography.bodySmall) }
         } else {
@@ -377,7 +506,7 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
                             Text("@${acc.username}", fontWeight = FontWeight.Bold)
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 if (vm.isRunning(acc.username)) Badge { Text("SENDING") }
-                                Badge { Text(if (acc.enabled) "ON" else "OFF") }
+                                Badge { Text(if (acc.enabled) "ON" else "PAUSED") }
                             }
                         }
                         Text(
@@ -388,6 +517,10 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
                             Text(ui.status.ifBlank { "Sending..." }, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
                             LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(4.dp))
                             Text("${ui.sent}/${ui.total} sent", style = MaterialTheme.typography.labelSmall)
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Switch(checked = acc.enabled, onCheckedChange = { acc.enabled = it })
+                            Text(if (acc.enabled) "Sending on" else "Paused", style = MaterialTheme.typography.labelSmall)
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(onClick = { onSelect(acc.username) }) { Text("Open") }
