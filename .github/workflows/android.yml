@@ -20,11 +20,15 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - run: chmod +x gradlew
       - run: ./gradlew testDebugUnitTest --stacktrace
-      - run: ./gradlew assembleDebug --stacktrace
+      - run: ./gradlew assembleDebug assembleRelease --stacktrace
       - uses: actions/upload-artifact@v4
         with:
           name: apk-debug
           path: app/build/outputs/apk/debug/*.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-release
+          path: app/build/outputs/apk/release/*.apk
       - name: Release to latest (main only)
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
@@ -33,7 +37,7 @@ jobs:
           name: latest
           make_latest: true
           generate_release_notes: true
-          files: app/build/outputs/apk/debug/*.apk
+          files: app/build/outputs/apk/release/*.apk
       - name: Release to preview (branch)
         if: github.ref != 'refs/heads/main'
         uses: softprops/action-gh-release@v2
@@ -42,4 +46,4 @@ jobs:
           name: preview
           make_latest: false
           generate_release_notes: true
-          files: app/build/outputs/apk/debug/*.apk
+          files: app/build/outputs/apk/release/*.apk

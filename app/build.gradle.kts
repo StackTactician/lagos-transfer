@@ -6,6 +6,13 @@ plugins {
 android {
     namespace = "com.lagostransfer"
     compileSdk = 34
+
+    // Where the licence server lives. Set LICENCE_SERVER in the CI env or
+    // licenceServer=... in gradle.properties, otherwise the default is used.
+    val licenceServer: String = System.getenv("LICENCE_SERVER")
+        ?: (project.findProperty("licenceServer") as String?)
+        ?: "https://licence.ekoaza.example"
+
     signingConfigs {
         create("fixed") {
             enableV1Signing = true
@@ -22,9 +29,18 @@ android {
         targetSdk = 34
         versionCode = 2
         versionName = "0.1.0"
+        buildConfigField("String", "LICENCE_SERVER", "\"$licenceServer\"")
     }
-    buildFeatures { compose = true }
-    buildTypes { debug { signingConfig = signingConfigs.getByName("fixed") } }
+    buildFeatures { compose = true; buildConfig = true }
+    buildTypes {
+        debug { signingConfig = signingConfigs.getByName("fixed") }
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            signingConfig = signingConfigs.getByName("fixed")
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+    }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

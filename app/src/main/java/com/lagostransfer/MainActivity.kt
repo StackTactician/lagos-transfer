@@ -74,6 +74,13 @@ fun App() {
     val accounts = vm.accounts
     var selected by remember { mutableStateOf<String?>(null) }
     val isSyncing = vm.isSyncing
+    val licence = vm.licence
+
+    // Trial used up or the trial data was edited - nothing works until a code is entered.
+    if (licence.locked) {
+        ActivationScreen(vm)
+        return
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -130,6 +137,57 @@ fun App() {
                     Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun ActivationScreen(vm: AppViewModel) {
+    val scope = rememberCoroutineScope()
+    var code by remember { mutableStateOf("") }
+    var err by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    val licence = vm.licence
+
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Column(
+            Modifier.fillMaxSize().padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Spacer(Modifier.height(48.dp))
+            Text("EKO AZA", fontWeight = FontWeight.Black, style = MaterialTheme.typography.headlineMedium)
+            Text("Activation needed", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (licence.trialExhausted)
+                    "This phone sent ${naira(licence.trialVolume)} in the trial. Enter an activation code to keep sending."
+                else
+                    "The trial data on this phone did not verify. Enter an activation code to continue.",
+                style = MaterialTheme.typography.bodySmall
+            )
+            OutlinedTextField(
+                code, { code = it.uppercase() },
+                label = { Text("Activation code") },
+                placeholder = { Text("EKO-XXXX-XXXX-XXXX") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Button(
+                enabled = !busy && code.isNotBlank(),
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    busy = true
+                    err = ""
+                    vm.redeem(code) { e ->
+                        err = e
+                        busy = false
+                        if (e.isEmpty()) code = ""
+                    }
+                }
+            ) { Text(if (busy) "Checking" else "Activate") }
+            if (err.isNotBlank()) {
+                Text(err, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+            }
+            Text("Device ${licence.deviceId.take(8)}", style = MaterialTheme.typography.labelSmall)
         }
     }
 }
@@ -218,6 +276,38 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
                                 Button(onClick = { apkFile?.let { UpdateChecker.install(ctx, it) } }, modifier = Modifier.fillMaxWidth()) { Text("Install now") }
                             }
                         }
+                    }
+                }
+            }
+        }
+        item {
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(if (vm.licence.licensed) "Licensed" else "Trial", fontWeight = FontWeight.Bold)
+                    Text(
+                        if (vm.licence.licensed) "This phone has a lifetime licence."
+                        else "Trial: ${naira(vm.licence.trialVolume)} of ${naira(Config.TRIAL_LIMIT)} used on this phone.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    if (!vm.licence.licensed) {
+                        var code by remember { mutableStateOf("") }
+                        var msg by remember { mutableStateOf("") }
+                        OutlinedTextField(
+                            code, { code = it.uppercase() },
+                            label = { Text("Activation code") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(enabled = code.isNotBlank(), onClick = {
+                                vm.redeem(code) { e ->
+                                    msg = if (e.isEmpty()) "Activated" else e
+                                    if (e.isEmpty()) code = ""
+                                }
+                            }) { Text("Activate") }
+                            OutlinedButton(onClick = { vm.reloadLicence() }) { Text("Check licence") }
+                        }
+                        if (msg.isNotBlank()) Text(msg, style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
@@ -456,7 +546,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
             if (ui.busy) Text(ui.status, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 Button(
-                    enabled = !ui.busy && acc.enabled && canSendNow,
+                    enabled = !ui.busy && acc.enabled && canSendNow && !vm.licence.locked,
                     modifier = Modifier.weight(1f),
                     onClick = { vm.startSend(acc.username, recipient, amt, t, note.ifBlank { null }) }
                 ) {

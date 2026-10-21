@@ -47,6 +47,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val accounts = mutableStateListOf<SessionAccount>()
     val uiMap = mutableStateMapOf<String, UiState>()
     var isSyncing by mutableStateOf(true)
+    var licence by mutableStateOf(LicenceState("", 0L, false, false))
+        private set
 
     private val jobs = mutableMapOf<String, Job>()
     private val stops = mutableMapOf<String, AtomicBoolean>()
@@ -95,6 +97,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             } finally {
                 isSyncing = false
             }
+            reloadLicence()
+        }
+    }
+
+    /** Reads the trial counter from the phone and asks the server about the licence. */
+    fun reloadLicence() {
+        viewModelScope.launch {
+            licence = License.load(app)
+            licence = License.refresh(app)
+        }
+    }
+
+    /** Redeems an activation code. Returns an empty string on success. */
+    fun redeem(code: String, onDone: (String) -> Unit) {
+        viewModelScope.launch {
+            val err = License.redeem(app, code)
+            licence = License.load(app)
+            onDone(err)
         }
     }
 
@@ -200,6 +220,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val acc = accounts.find { it.username == username } ?: return
         val s = getUi(username)
         if (jobs[username]?.isActive == true) return
+        if (licence.locked) {
+            getUi(username).lastError = "Trial finished - enter an activation code to keep sending"
+            return
+        }
         // One name, or a list - the list is served one recipient after the other.
         val recipients = parseRecipients(recipient)
         val stopFlag = AtomicBoolean(false)
@@ -282,6 +306,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 s.balanceText = naira(step.money)
             }
             is RunStep.Sent -> {
+                licence = License.addSent(app, amount)
                 s.sent = s.sent + 1
                 s.total = s.total.coerceAtLeast(step.index)
                 s.status = "Sent ${s.sent} of ${s.total}"
