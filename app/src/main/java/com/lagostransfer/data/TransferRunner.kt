@@ -130,7 +130,7 @@ class TransferRunner(
             var attempt = 0
             var settled = false
             var unknown = false
-            while (attempt < 6 && !settled) {
+            while (attempt < 6 && !settled && !unknown) {
                 attempt++
                 if (stop()) { emit(RunStep.Halted("Stopped after $sent of $total")); return }
 

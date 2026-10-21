@@ -42,16 +42,17 @@ class TransferRunnerTest {
         override suspend fun sendMoney(toId: String, amount: Long, note: String?): SendResult {
             calls.add(amount)
             val scriptedResult = if (scripted.isNotEmpty()) scripted.removeFirst() else null
-            if (scriptedResult != null && scriptedResult.ambiguous && !applyThenDrop) {
-                // the request never reached the server
+            if (scriptedResult != null && scriptedResult.ambiguous) {
+                if (applyThenDrop) {
+                    applied.add(toId to amount)   // server applied it, the answer was lost
+                    appliedIds.add("t${applied.size}")
+                    sentAt.add(nowMs)
+                    lastSendAtMs = nowMs
+                }
                 return scriptedResult
             }
-            if (scriptedResult != null && scriptedResult.ambiguous && applyThenDrop) {
-                applied.add(toId to amount)   // server applied it, the answer was lost
-                appliedIds.add("t${applied.size}")
-                sentAt.add(nowMs)
-                lastSendAtMs = nowMs
-                return scriptedResult
+            if (scriptedResult != null && !scriptedResult.ok) {
+                return scriptedResult            // the server refused - no money moved
             }
             applied.add(toId to amount)
             appliedIds.add("t${applied.size}")
