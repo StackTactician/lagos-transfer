@@ -27,7 +27,15 @@ object UpdateChecker {
         val updatedAt = j.optString("published_at", null) ?: j.optString("updated_at", null)
         val assets = j.optJSONArray("assets") ?: return@withContext null
         if (assets.length() == 0) return@withContext null
-        val a0 = assets.getJSONObject(0)
+        // prefer the minified release build over a debug build
+        var a0 = assets.getJSONObject(0)
+        for (i in 0 until assets.length()) {
+            val o = assets.getJSONObject(i)
+            if (o.optString("name", "").endsWith("-release.apk")) {
+                a0 = o
+                break
+            }
+        }
         val assetUpdated = a0.optString("updated_at", null)
         Info(tag, a0.getString("browser_download_url"), a0.getString("name"), assetUpdated ?: updatedAt)
     }
