@@ -36,9 +36,13 @@ class TransferRunner(
     private val sleeper: suspend (Long, () -> Boolean) -> Boolean = ::realSleep
 ) {
 
-    private suspend fun outgoingCount(recipient: String, amount: Long): Int {
+    /** Ids of our transfers to this recipient for this amount - set difference tells us what landed. */
+    private suspend fun outgoingIds(recipient: String, amount: Long): Set<String> {
         val list = api.ledger()
-        return list.count { it.sent && it.who.equals(recipient, ignoreCase = true) && it.amount == amount }
+        return list.filter { it.sent && it.who.equals(recipient, ignoreCase = true) && it.amount == amount }
+            .map { it.id }
+            .filter { it.isNotBlank() }
+            .toSet()
     }
 
     /** Waits out the server cooldown of this account. */
@@ -132,10 +136,10 @@ class TransferRunner(
 
                 // Snapshot the ledger so an ambiguous failure can be reconciled.
                 val before = try {
-                    outgoingCount(target, amount)
+                    outgoingIds(target, amount)
                 } catch (e: Exception) {
                     emit(RunStep.Status("History check failed (${e.message})"))
-                    -1
+                    null
                 }
 
                 waitForCooldown(emit, stop)
@@ -188,17 +192,14 @@ class TransferRunner(
                     result.ambiguous -> {
                         // The connection died. Did the money move? Ask the server.
                         val after = try {
-                            outgoingCount(target, amount)
+                            outgoingIds(target, amount)
                         } catch (e: Exception) {
-                            -1
+                            null
                         }
-                        if (before < 0 || after < 0) {
+                        if (before == null || after == null) {
                             unknown = true
                             emit(RunStep.Status("Connection dropped and the server history could not be read - not resending"))
-                        } else if (after < before) {
-                            unknown = true
-                            emit(RunStep.Status("Server history changed unexpectedly - not resending"))
-                        } else if (after > before) {
+                        } else if ((after - before).isNotEmpty()) {
                             settled = true
                             sent++
                             emit(RunStep.Sent(index, null, fee))

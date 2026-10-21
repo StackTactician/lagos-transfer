@@ -25,6 +25,7 @@ class TransferRunnerTest {
         val scripted = ArrayDeque<SendResult>()
         val calls = mutableListOf<Long>()          // amount of every sendMoney call
         val applied = mutableListOf<Pair<String, Long>>() // transfers the server really applied
+        val appliedIds = mutableListOf<String>()
         val sentAt = mutableListOf<Long>()
         var applyThenDrop: Boolean = false        // server applies it, the connection dies
 
@@ -34,7 +35,7 @@ class TransferRunnerTest {
         override suspend fun getBalance(): Balance = Balance(balance, null, hasGame)
         override suspend fun ledger(): List<Transfer> {
             if (ledgerBroken) throw IOException("history unavailable")
-            return applied.map { Transfer("id${applied.indexOf(it)}", "target", it.second, true, false, "waiting", nowMs, null, null) }
+            return appliedIds.mapIndexed { i, id -> Transfer(id, "target", applied[i].second, true, false, "waiting", nowMs, null, null) }
         }
         override suspend fun claimIncoming(): List<Transfer> = emptyList()
 
@@ -47,14 +48,16 @@ class TransferRunnerTest {
             }
             if (scriptedResult != null && scriptedResult.ambiguous && applyThenDrop) {
                 applied.add(toId to amount)   // server applied it, the answer was lost
+                appliedIds.add("t${applied.size}")
                 sentAt.add(nowMs)
                 lastSendAtMs = nowMs
                 return scriptedResult
             }
             applied.add(toId to amount)
+            appliedIds.add("t${applied.size}")
             sentAt.add(nowMs)
             lastSendAtMs = nowMs
-            return scriptedResult ?: SendResult(ok = true, id = "id${applied.size}", amount = amount, fee = 10L, http = 200)
+            return scriptedResult ?: SendResult(ok = true, id = "t${applied.size}", amount = amount, fee = 10L, http = 200)
         }
     }
 
