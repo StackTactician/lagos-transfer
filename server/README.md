@@ -6,18 +6,21 @@ which phone redeemed which code.
 It does **not** store game logins, does not see transfers and does not talk to
 lagoslife.app. All of that stays in the Android app.
 
-## Run it
+## What is live right now
 
-```bash
-cd server
-ADMIN_TOKEN=$(openssl rand -hex 16) node server.js
-```
+| | |
+|---|---|
+| worker | `eko-licence` on Cloudflare Workers |
+| url | `https://eko-licence.mmmoyosore09.workers.dev` |
+| database | D1 `eko-licence` (id `d754d431-5006-4a34-b76b-11c4da326ce3`) |
+| code | `server/worker.js` |
+| deploy | `.github/workflows/deploy-licence.yml` (push to `server/**` or run it by hand) |
 
-| env | default | meaning |
-|---|---|---|
-| `PORT` | `8787` | port |
-| `DATA` | `./codes.json` | where the codes are kept |
-| `ADMIN_TOKEN` | empty | needed for minting codes, minting is disabled without it |
+wrangler does not run on an Android phone, so the deploy happens from GitHub
+Actions. It needs two repository secrets:
+
+- `CF_API_TOKEN` - Cloudflare API token (Workers Scripts: Edit, D1: Edit)
+- `CF_ACCOUNT_ID` - the Cloudflare account id
 
 ## Endpoints
 
@@ -32,7 +35,7 @@ GET  /api/licence?device_id=...
   200 {licensed:true, license_id, redeemed_at}   this phone redeemed a code
   200 {licensed:false}
 
-POST /api/admin/mint      Authorization: Bearer <ADMIN_TOKEN>
+POST /api/admin/mint      Authorization: Bearer <LICENCE_ADMIN_TOKEN>
   body {count: 10, days: 2, note: "buyer name"}
   200 {codes:["EKO-XXXX-XXXX-XXXXC", ...]}
 
@@ -41,26 +44,31 @@ GET  /api/health          200 {ok:true}
 
 Codes are stored hashed (sha256), the server never keeps the plaintext.
 
-## Point the app at it
-
-The app reads the address from the `LICENCE_SERVER` environment variable at
-build time, or from `licenceServer=` in `gradle.properties`:
+## Minting codes
 
 ```bash
-LICENCE_SERVER=https://your.domain node ../gradlew assembleRelease
+curl -X POST https://eko-licence.mmmoyosore09.workers.dev/api/admin/mint \
+  -H "Authorization: Bearer $LICENCE_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"count":10,"days":2,"note":"buyer name"}'
 ```
 
-In GitHub Actions add it as a repository secret named `LICENCE_SERVER` and the
-workflow picks it up.
+`days` is how long the code can be redeemed. The licence it gives is for life.
 
-## Behind a reverse proxy
+## Point the app at it
 
-Terminate TLS in front of it (nginx, Caddy, Cloudflare Tunnel). The app only
-talks HTTPS.
+The app reads the address at build time from the `licenceServer` gradle
+property or the `LICENCE_SERVER` environment variable. The android workflow
+passes the `LICENCE_SERVER` repository secret, so nothing has to be edited in
+the code.
 
-```nginx
-location /api/ {
-    proxy_pass http://127.0.0.1:8787;
-    proxy_set_header Host $host;
-}
+## Running it somewhere else instead
+
+`server/server.js` is the same service as a plain Node process with a JSON
+file instead of D1:
+
+```bash
+ADMIN_TOKEN=secret node server.js
 ```
+
+Env: `PORT` (8787), `DATA` (./codes.json), `ADMIN_TOKEN`.
