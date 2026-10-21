@@ -254,7 +254,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     amount = amount,
                     times = times,
                     note = note,
-                    stop = { stopFlag.get() },
+                    // the trial can run out mid batch - stop at the next send boundary
+                    stop = { stopFlag.get() || License.state.locked },
                     paused = { !acc.enabled },
                     emit = { name, step -> onStep(username, acc, db, step, name, amount, times) }
                 )
@@ -270,6 +271,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 s.lastError = friendlyError(e)
                 s.log = listOf("Error - ${friendlyError(e)}") + s.log
             } finally {
+                if (License.state.locked) {
+                    getUi(username).lastError = "Trial finished - enter an activation code to keep sending"
+                }
                 // The keep alive service stays up while any other account is still sending.
                 if (activeSends.decrementAndGet() <= 0) {
                     try { app.stopService(Intent(app, KeepAliveService::class.java)) } catch (_: Exception) {}
