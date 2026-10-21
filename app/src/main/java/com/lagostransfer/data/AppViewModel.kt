@@ -30,6 +30,7 @@ class UiState {
     var sent by mutableStateOf(0)
     var total by mutableStateOf(0)
     var incoming by mutableStateOf(listOf<Transfer>())
+    var ledger by mutableStateOf(listOf<Transfer>())
     var lastError by mutableStateOf("")
 }
 
@@ -42,6 +43,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val jobs = mutableMapOf<String, Job>()
     private val stops = mutableMapOf<String, AtomicBoolean>()
+    private val activeSends = java.util.concurrent.atomic.AtomicInteger(0)
 
     fun getUi(u: String) = uiMap.getOrPut(u) { UiState() }
 
@@ -133,15 +135,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Loads money that is waiting in escrow for this account to claim it. */
+    /** Loads the server ledger: what went out, what is waiting, what was claimed. */
     fun loadIncoming(username: String) {
         val acc = accounts.find { it.username == username } ?: return
         val s = getUi(username)
         viewModelScope.launch {
             try {
-                val list = acc.client.ledger().filter { it.waiting }
-                s.incoming = list
-            } catch (_: Exception) {
+                val list = acc.client.ledger()
+                s.ledger = list.take(30)
+                s.incoming = list.filter { it.waiting }
+            } catch (e: Exception) {
+                s.lastError = friendlyError(e)
             }
         }
     }
@@ -160,7 +164,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     acc.balance = acc.client.getBalance()
                     s.balanceText = naira(acc.balance!!.money)
                 } catch (_: Exception) {}
-                s.incoming = acc.client.ledger().filter { it.waiting }
+                val list = acc.client.ledger()
+                s.ledger = list.take(30)
+                s.incoming = list.filter { it.waiting }
                 onDone(total)
             } catch (e: Exception) {
                 s.lastError = friendlyError(e)
@@ -190,6 +196,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         jobs[username] = viewModelScope.launch {
             try {
+                activeSends.incrementAndGet()
                 try {
                     ContextCompat.startForegroundService(app, Intent(app, KeepAliveService::class.java))
                 } catch (_: Exception) {
@@ -217,7 +224,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 s.lastError = friendlyError(e)
                 s.log = listOf("Error - ${friendlyError(e)}") + s.log
             } finally {
-                try { app.stopService(Intent(app, KeepAliveService::class.java)) } catch (_: Exception) {}
+                // The keep alive service stays up while any other account is still sending.
+                if (activeSends.decrementAndGet() <= 0) {
+                    try { app.stopService(Intent(app, KeepAliveService::class.java)) } catch (_: Exception) {}
+                }
                 TransferNotify.clearAll(app, listOf(username))
                 s.busy = false
                 s.status = ""

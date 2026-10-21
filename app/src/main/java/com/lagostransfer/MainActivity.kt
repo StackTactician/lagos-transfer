@@ -335,6 +335,25 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
                 }
             }
         }
+        item {
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Server ledger", fontWeight = FontWeight.Bold)
+                        TextButton(onClick = { vm.loadIncoming(acc.username) }) { Text("Refresh") }
+                    }
+                    if (ui.ledger.isEmpty()) {
+                        Text("Nothing on the server for this account yet.", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        ui.ledger.take(8).forEach { t ->
+                            val state = if (t.received || t.status == "delivered") "claimed" else "waiting to be claimed"
+                            val arrow = if (t.sent) "\u2192" else "\u2190"
+                            Text("$arrow @${t.who} ${naira(t.amount)} \u00b7 $state", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+            }
+        }
         if (ui.incoming.isNotEmpty()) {
             item {
                 ElevatedCard(Modifier.fillMaxWidth()) {
