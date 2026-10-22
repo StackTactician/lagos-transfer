@@ -47,6 +47,20 @@ Codes are stored hashed (sha256), the server never keeps the plaintext.
 ## Minting codes
 
 ```bash
+./mint-codes.sh                       # 10 codes, redeemable for 2 days
+./mint-codes.sh 25                    # 25 codes
+./mint-codes.sh 25 "adewale"          # 25 codes with a note
+./mint-codes.sh 25 30 "adewale"       # 25 codes, 30 days to redeem
+./mint-codes.sh -n "adewale" -o sold.txt
+```
+
+The script prints the codes one per line and can append them to a file. The
+admin token comes from `LICENCE_ADMIN_TOKEN` or from `~/.eko_licence_token`
+(keep that file out of the repo).
+
+Raw call:
+
+```bash
 curl -X POST https://eko-licence.mmmoyosore09.workers.dev/api/admin/mint \
   -H "Authorization: Bearer $LICENCE_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
