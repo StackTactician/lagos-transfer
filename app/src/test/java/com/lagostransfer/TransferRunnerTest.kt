@@ -296,7 +296,7 @@ class TransferRunnerTest {
         val rec = Recorder()
         runBlocking {
             runRecipients(
-                api, listOf("adewale", "chidi", "epe"), 1_000L, 2, null,
+                api, listOf(RecipientRun("adewale", 2), RecipientRun("chidi", 2), RecipientRun("epe", 2)), 1_000L, null,
                 { ms, stop -> api.nowMs += ms; stop() },
                 { false }, { false }
             ) { _, step -> rec.on(step) }
@@ -314,7 +314,7 @@ class TransferRunnerTest {
         api.scripted.add(SendResult(ok = false, http = 403, error = "balance can't be sent"))
         runBlocking {
             runRecipients(
-                api, listOf("adewale", "chidi"), 1_000L, 1, null,
+                api, listOf(RecipientRun("adewale", 1), RecipientRun("chidi", 1)), 1_000L, null,
                 { ms, stop -> api.nowMs += ms; stop() },
                 { false }, { false }
             ) { _, _ -> }
@@ -328,7 +328,7 @@ class TransferRunnerTest {
         api.lookupFails.add("ghost")
         runBlocking {
             runRecipients(
-                api, listOf("ghost", "chidi"), 1_000L, 1, null,
+                api, listOf(RecipientRun("ghost", 1), RecipientRun("chidi", 1)), 1_000L, null,
                 { ms, stop -> api.nowMs += ms; stop() },
                 { false }, { false }
             ) { _, _ -> }

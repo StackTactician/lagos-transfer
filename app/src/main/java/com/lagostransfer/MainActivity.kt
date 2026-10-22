@@ -488,6 +488,12 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
         }
         item { Divider() }
         item {
+            Text(
+                "Eko Aza ${BuildConfig.VERSION_NAME} · by ${BuildConfig.DEVELOPER}",
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
+        item {
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
