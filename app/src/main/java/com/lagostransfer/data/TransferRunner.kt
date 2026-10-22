@@ -259,8 +259,8 @@ suspend fun runRecipients(
     sleeper: suspend (Long, () -> Boolean) -> Boolean = ::realSleep,
     stop: () -> Boolean,
     paused: () -> Boolean,
-    emit: suspend (String, RunStep) -> Unit,
-    onStart: suspend (Int, String) -> Unit = { _, _ -> }
+    onStart: suspend (Int, String) -> Unit = { _, _ -> },
+    emit: suspend (String, RunStep) -> Unit
 ) {
     var index = 0
     for (target in recipients) {
