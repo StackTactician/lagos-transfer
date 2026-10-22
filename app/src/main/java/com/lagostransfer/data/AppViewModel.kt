@@ -103,6 +103,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Refreshes the balance of every account at once. */
+    fun refreshAll(onDone: (Int, Int) -> Unit) {
+        val list = accounts.toList()
+        if (list.isEmpty()) { onDone(0, 0); return }
+        viewModelScope.launch {
+            val results = list.map { acc ->
+                async {
+                    try {
+                        if (!acc.client.hasSession()) acc.client.login()
+                        val b = acc.client.getBalance()
+                        acc.balance = b
+                        val s = getUi(acc.username)
+                        s.balanceText = naira(b.money)
+                        s.canSendText = b.canSend?.let { naira(it) } ?: "-"
+                        withContext(Dispatchers.IO) { SecureStore.saveCookies(app, acc.username, acc.client.exportCookies()) }
+                        true
+                    } catch (_: Exception) {
+                        false
+                    }
+                }
+            }.map { it.await() }
+            onDone(results.count { it }, list.size)
+        }
+    }
+
     /** Reads the trial counter from the phone and asks the server about the licence. */
     fun reloadLicence(onDone: ((LicenceState) -> Unit)? = null) {
         viewModelScope.launch {

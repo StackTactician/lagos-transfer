@@ -324,6 +324,7 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
     var password by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    var refreshingAll by remember { mutableStateOf(false) }
     var updateInfo by remember { mutableStateOf<UpdateChecker.Info?>(null) }
     var updating by remember { mutableStateOf(false) }
     var isUpToDate by remember { mutableStateOf(false) }
@@ -477,7 +478,22 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
             ) { if (busy) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp) else Text("Log in and add") }
         }
         item { Divider() }
-        item { Text("Accounts (${accounts.size})", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold) }
+        item {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Accounts (${accounts.size})", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                OutlinedButton(enabled = accounts.isNotEmpty() && !refreshingAll, onClick = {
+                    refreshingAll = true
+                    vm.refreshAll { ok, total ->
+                        refreshingAll = false
+                        scope.launch { snacks.showSnackbar("Refreshed $ok of $total accounts") }
+                    }
+                }) { Text(if (refreshingAll) "Refreshing" else "Refresh all") }
+            }
+        }
         if (accounts.size > 1) {
             item {
                 ElevatedCard(Modifier.fillMaxWidth()) {
@@ -799,13 +815,27 @@ fun HistoryPage(vm: AppViewModel) {
         }
         if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(4.dp))
         Divider()
+        val grouped = entries.groupBy { it.account }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
             if (entries.isEmpty()) item { Text("No transfers yet.", style = MaterialTheme.typography.bodySmall) }
-            items(entries) { e ->
-                ElevatedCard(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("@${e.account} to @${e.recipient} - ${naira(e.amount)} - ${e.status}", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodySmall)
-                        Text("${e.transferred} sent, ${e.remaining} left, ${naira(e.amountLeft)} left - ${java.text.SimpleDateFormat("MMM dd HH:mm", Locale.getDefault()).format(java.util.Date(e.ts))}", style = MaterialTheme.typography.labelSmall)
+            grouped.forEach { (account, rows) ->
+                item(key = "head-$account") {
+                    Text("@$account", fontWeight = FontWeight.Black, style = MaterialTheme.typography.titleSmall)
+                }
+                val keyed = rows.mapIndexed { i, e -> e to "row-$account-$i-${e.ts}" }
+                items(keyed, key = { it.second }) { pair ->
+                    val e = pair.first
+                    ElevatedCard(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                "${e.transferred}/${e.transferred + e.remaining} · ${naira(e.amount)} → @${e.recipient} · ${e.status}",
+                                fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                java.text.SimpleDateFormat("MMM dd HH:mm", Locale.getDefault()).format(java.util.Date(e.ts)),
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
                     }
                 }
             }
