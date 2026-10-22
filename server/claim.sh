@@ -34,10 +34,13 @@ password_for() {
     line="$(grep -E "^${user}:" "$ACCOUNTS_FILE" | head -1)"
     if [ -n "$line" ]; then echo "${line#*:}"; return 0; fi
   fi
-  if [ -t 0 ]; then
+  # Read from the terminal itself, so it still works when stdin is piped or
+  # closed. The characters do not show, that is normal.
+  if [ -r /dev/tty ]; then
     local pw
-    read -r -s -p "password for @$user: " pw
-    echo
+    echo "password for @$user (nothing will show, press enter when done):" > /dev/tty
+    read -r -s pw < /dev/tty || true
+    echo "" > /dev/tty
     echo "$pw"
     return 0
   fi
