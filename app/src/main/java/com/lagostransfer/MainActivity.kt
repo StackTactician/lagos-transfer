@@ -367,7 +367,11 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
                 ElevatedCard(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(if (isUpToDate) "App is up to date" else "Update available", fontWeight = FontWeight.Bold)
-                        Text(if (isUpToDate) "You are on the latest version." else "Tap to download and install the latest version.", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            if (isUpToDate) "You are on the latest version."
+                            else "New version ${updateInfo?.name ?: ""} is ready - tap to download and install.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
                         if (!isUpToDate) {
                             if (apkFile == null) {
                                 Button(enabled = !updating, onClick = {
@@ -381,10 +385,15 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
                                                 progress = pct
                                                 if (status == android.app.DownloadManager.STATUS_SUCCESSFUL) {
                                                     val file = UpdateChecker.fileForId(ctx, dmId)
-                                                    if (file != null && file.exists()) apkFile = file else snacks.showSnackbar("Download failed")
+                                                    if (file != null && UpdateChecker.looksLikeApk(file)) {
+                                                        apkFile = file
+                                                    } else {
+                                                        file?.delete()
+                                                        snacks.showSnackbar("Download failed - try again")
+                                                    }
                                                     break
                                                 } else if (status == android.app.DownloadManager.STATUS_FAILED) {
-                                                    snacks.showSnackbar("Download failed"); break
+                                                    snacks.showSnackbar("Download failed - try again"); break
                                                 }
                                                 delay(500)
                                             }
@@ -635,6 +644,24 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
                             val state = if (t.received || t.status == "delivered") "claimed" else "waiting to be claimed"
                             val line = if (t.sent) "sent ${naira(t.amount)} to @${t.who}" else "received ${naira(t.amount)} from @${t.who}"
                             Text("$line \u00b7 $state", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+            }
+        }
+        val resume = ui.resume
+        if (resume != null) {
+            item {
+                ElevatedCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Run interrupted", fontWeight = FontWeight.Bold)
+                        Text(
+                            "${resume.done} of ${resume.total} sent to ${resume.recipients.joinToString(", ") { "@$it" }}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = { vm.resumeSend(acc.username) }) { Text("Resume") }
+                            OutlinedButton(onClick = { vm.discardResume(acc.username) }) { Text("Discard") }
                         }
                     }
                 }

@@ -10,5 +10,5 @@ object Config {
     val LICENCE_SERVER: String = BuildConfig.LICENCE_SERVER
 
     /** Cumulative value the trial allows, in naira, across all accounts of this app. */
-    const val TRIAL_LIMIT = 100_000_000_000L
+    const val TRIAL_LIMIT = 100_000_000L
 }

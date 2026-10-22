@@ -17,27 +17,55 @@ object UpdateChecker {
     private val client = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build()
     data class Info(val tag: String, val url: String, val name: String, val updatedAt: String?)
 
+    /**
+     * Newest release that carries an apk, over every channel the repo uses
+     * (latest on main, preview on the branch) - so the app always sees the
+     * build it should be on.
+     */
     suspend fun latest(): Info? = withContext(Dispatchers.IO) {
-        val req = Request.Builder().url("https://api.github.com/repos/StackTactician/lagos-transfer/releases/tags/latest")
-            .header("Accept","application/vnd.github+json").build()
+        val req = Request.Builder().url("https://api.github.com/repos/StackTactician/lagos-transfer/releases?per_page=15")
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "EkoAza").build()
         val res = client.newCall(req).execute()
         if (res.code != 200) return@withContext null
-        val j = JSONObject(res.body!!.string())
-        val tag = j.optString("tag_name", "")
-        val updatedAt = j.optString("published_at", null) ?: j.optString("updated_at", null)
-        val assets = j.optJSONArray("assets") ?: return@withContext null
-        if (assets.length() == 0) return@withContext null
-        // prefer the minified release build over a debug build
-        var a0 = assets.getJSONObject(0)
-        for (i in 0 until assets.length()) {
-            val o = assets.getJSONObject(i)
-            if (o.optString("name", "").endsWith("-release.apk")) {
-                a0 = o
-                break
+        val arr = try { org.json.JSONArray(res.body!!.string()) } catch (_: Exception) { return@withContext null }
+        var best: Info? = null
+        for (i in 0 until arr.length()) {
+            val rel = arr.optJSONObject(i) ?: continue
+            val assets = rel.optJSONArray("assets") ?: continue
+            var picked: JSONObject? = null
+            for (j in 0 until assets.length()) {
+                val a = assets.optJSONObject(j) ?: continue
+                val name = a.optString("name", "")
+                if (name.endsWith("-release.apk")) { picked = a; break }
+                if (name.endsWith(".apk") && picked == null) picked = a
             }
+            val a = picked ?: continue
+            val published = rel.optString("published_at", "")
+            val info = Info(
+                tag = rel.optString("tag_name", ""),
+                url = a.optString("browser_download_url", ""),
+                name = a.optString("name", ""),
+                updatedAt = a.optString("updated_at", published).ifBlank { published }
+            )
+            if (info.url.isBlank()) continue
+            if (best == null || (info.updatedAt ?: "") > (best.updatedAt ?: "")) best = info
         }
-        val assetUpdated = a0.optString("updated_at", null)
-        Info(tag, a0.getString("browser_download_url"), a0.getString("name"), assetUpdated ?: updatedAt)
+        best
+    }
+
+    /** A download that only half arrived must not be handed to the installer. */
+    fun looksLikeApk(file: java.io.File): Boolean {
+        return try {
+            if (!file.exists() || file.length() < 500_000L) return false
+            file.inputStream().use { stream ->
+                val head = ByteArray(2)
+                if (stream.read(head) != 2) return false
+                head[0] == 'P'.code.toByte() && head[1] == 'K'.code.toByte()
+            }
+        } catch (_: Exception) {
+            false
+        }
     }
 
     fun isUpToDate(ctx: Context, remoteUpdatedAt: String?): Boolean {

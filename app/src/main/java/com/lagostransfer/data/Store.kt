@@ -47,6 +47,17 @@ object SecureStore {
             val (k, v) = it.split("=", limit = 2); k.trim() to v.trim()
         }.toMap()
     }
+    /** The run that was going on when the app was closed, so it can be resumed. */
+    fun saveRun(ctx: Context, json: String) {
+        prefs(ctx).edit().putString("run_plan", json).apply()
+    }
+
+    fun loadRun(ctx: Context): String? = prefs(ctx).getString("run_plan", null)
+
+    fun clearRun(ctx: Context) {
+        prefs(ctx).edit().remove("run_plan").apply()
+    }
+
     fun hash(s: String): String {
         val d = MessageDigest.getInstance("SHA-256").digest(s.toByteArray())
         return d.joinToString("") { "%02x".format(it) }

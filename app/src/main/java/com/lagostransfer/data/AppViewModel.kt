@@ -20,6 +20,20 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 
+/** A run that was going on when the app was closed. */
+data class RunPlan(
+    val username: String,
+    val recipients: List<String>,
+    val times: Int,
+    val amount: Long,
+    val note: String?,
+    val sent: List<Int>
+) {
+    val done: Int get() = sent.sum()
+    val total: Int get() = times * recipients.size
+    val finished: Boolean get() = done >= total
+}
+
 class UiState {
     var busy by mutableStateOf(false)
     var status by mutableStateOf("")
@@ -33,6 +47,7 @@ class UiState {
     var incoming by mutableStateOf(listOf<Transfer>())
     var ledger by mutableStateOf(listOf<Transfer>())
     var ledgerNote by mutableStateOf("")
+    var resume by mutableStateOf<RunPlan?>(null)
 
     /** The send form belongs to the account, not to the page - so it never mixes. */
     var recipient by mutableStateOf("")
@@ -100,6 +115,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 isSyncing = false
             }
             reloadLicence()
+            loadInterruptedRun()
         }
     }
 
@@ -256,6 +272,39 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         // One name, or a list - the list is served one recipient after the other.
         val recipients = parseRecipients(recipient)
+        runPlan(username, recipients, times, amount, note, List(recipients.size) { 0 })
+    }
+
+    /** Picks a run back up where the app left it. */
+    fun resumeSend(username: String) {
+        val plan = getUi(username).resume ?: return
+        val remaining = plan.recipients.mapIndexed { i, _ -> plan.times - plan.sent.getOrElse(i) { 0 } }
+        getUi(username).resume = null
+        runPlan(username, plan.recipients, plan.times, plan.amount, plan.note, plan.sent, remaining)
+    }
+
+    fun discardResume(username: String) {
+        getUi(username).resume = null
+        viewModelScope.launch(Dispatchers.IO) { SecureStore.clearRun(app) }
+    }
+
+    private fun runPlan(
+        username: String,
+        recipients: List<String>,
+        times: Int,
+        amount: Long,
+        note: String?,
+        sentBefore: List<Int>,
+        remainingOverride: List<Int>? = null
+    ) {
+        val acc = accounts.find { it.username == username } ?: return
+        val s = getUi(username)
+        if (jobs[username]?.isActive == true) return
+        if (licence.locked) {
+            s.lastError = "Trial finished - enter an activation code to keep sending"
+            return
+        }
+        val sentCounts = sentBefore.toMutableList()
         val stopFlag = AtomicBoolean(false)
         stops[username] = stopFlag
         s.busy = true
@@ -273,16 +322,30 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 } catch (_: Exception) {
                 }
                 val db = LogDb(app)
+                val plan = RunPlan(username, recipients, times, amount, note, sentCounts.toList())
+                withContext(Dispatchers.IO) { SecureStore.saveRun(app, planJson(plan)) }
+                val runs = recipients.mapIndexed { i, name ->
+                    val left = remainingOverride?.getOrElse(i) { times } ?: times
+                    RecipientRun(name, left)
+                }
+                var currentIndex = 0
                 runRecipients(
                     api = acc.client,
-                    recipients = recipients,
+                    recipients = runs,
                     amount = amount,
-                    times = times,
                     note = note,
                     // the trial can run out mid batch - stop at the next send boundary
                     stop = { stopFlag.get() || License.state.locked },
                     paused = { !acc.enabled },
-                    emit = { name, step -> onStep(username, acc, db, step, name, amount, times) }
+                    onStart = { index, _ -> currentIndex = index - 1 },
+                    emit = { name, step ->
+                        if (step is RunStep.Sent && currentIndex in sentCounts.indices) {
+                            sentCounts[currentIndex] = sentCounts[currentIndex] + 1
+                            val live = RunPlan(username, recipients, times, amount, note, sentCounts.toList())
+                            withContext(Dispatchers.IO) { SecureStore.saveRun(app, planJson(live)) }
+                        }
+                        onStep(username, acc, db, step, name, amount, times)
+                    }
                 )
                 try {
                     acc.balance = acc.client.getBalance()
@@ -306,9 +369,52 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 TransferNotify.clearAll(app, listOf(username))
                 s.busy = false
                 s.status = ""
+                withContext(Dispatchers.IO) { SecureStore.clearRun(app) }
                 if (s.log.isEmpty()) s.log = db2(username)
                 stops.remove(username)
             }
+        }
+    }
+
+    private fun planJson(plan: RunPlan): String = org.json.JSONObject().apply {
+        put("u", plan.username)
+        put("r", org.json.JSONArray(plan.recipients))
+        put("t", plan.times)
+        put("a", plan.amount)
+        put("n", plan.note ?: "")
+        put("s", org.json.JSONArray(plan.sent))
+    }.toString()
+
+    private fun planFrom(raw: String): RunPlan? = try {
+        val j = org.json.JSONObject(raw)
+        val names = mutableListOf<String>()
+        val arr = j.optJSONArray("r") ?: org.json.JSONArray()
+        for (i in 0 until arr.length()) names.add(arr.optString(i))
+        val counts = mutableListOf<Int>()
+        val sarr = j.optJSONArray("s") ?: org.json.JSONArray()
+        for (i in 0 until sarr.length()) counts.add(sarr.optInt(i))
+        RunPlan(
+            username = j.optString("u"),
+            recipients = names,
+            times = j.optInt("t", 1),
+            amount = j.optLong("a", 0L),
+            note = j.optString("n").ifBlank { null },
+            sent = counts
+        )
+    } catch (_: Exception) {
+        null
+    }
+
+    /** Reads the run that was interrupted and offers it back. */
+    private fun loadInterruptedRun() {
+        viewModelScope.launch {
+            val raw = withContext(Dispatchers.IO) { SecureStore.loadRun(app) } ?: return@launch
+            val plan = planFrom(raw) ?: return@launch
+            if (plan.finished) {
+                withContext(Dispatchers.IO) { SecureStore.clearRun(app) }
+                return@launch
+            }
+            getUi(plan.username).resume = plan
         }
     }
 

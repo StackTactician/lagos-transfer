@@ -56,7 +56,7 @@ class TransferRunner(
         if (last <= 0L) return
         val wait = last + LagosClient.SEND_GAP_MS - api.now()
         if (wait <= 0L) return
-        emit(RunStep.Status("Waiting ${(wait + 999) / 1000}s for the server cooldown"))
+        emit(RunStep.Status("Waiting ${(wait + 999) / 1000}s"))
         sleeper(wait, stop)
     }
 
@@ -88,7 +88,7 @@ class TransferRunner(
                 is Lookup.Found -> toId = l.id
                 Lookup.NotFound -> { emit(RunStep.Halted("No user @$target")); return }
                 is Lookup.Failed -> {
-                    emit(RunStep.Status("Lookup failed (${l.reason}) - retrying"))
+                    emit(RunStep.Status("Looking up the recipient - trying again"))
                     delay(3_000L)
                 }
             }
@@ -111,7 +111,7 @@ class TransferRunner(
                 api.getBalance()
             } catch (e: Exception) {
                 balanceTries++
-                emit(RunStep.Status("Balance check failed (${e.message}) - retrying"))
+                emit(RunStep.Status("Could not check the balance - trying again"))
                 if (balanceTries >= 3) {
                     emit(RunStep.Halted("Server not reachable - ${friendlyError(e)}"))
                     return
@@ -143,7 +143,7 @@ class TransferRunner(
                 val before = try {
                     outgoingIds(target, amount)
                 } catch (e: Exception) {
-                    emit(RunStep.Status("History check failed (${e.message})"))
+                    emit(RunStep.Status("Could not read the transfer history"))
                     null
                 }
 
@@ -175,7 +175,7 @@ class TransferRunner(
                     }
 
                     result.http == 429 -> {
-                        emit(RunStep.Status("Server rate limit - waiting ${LagosClient.RATE_LIMIT_WAIT_MS / 1000}s, then the same send again"))
+                        emit(RunStep.Status("Server is busy - waiting ${LagosClient.RATE_LIMIT_WAIT_MS / 1000}s and trying the same send again"))
                         sleeper(LagosClient.RATE_LIMIT_WAIT_MS, stop)
                     }
 
@@ -203,14 +203,14 @@ class TransferRunner(
                         }
                         if (before == null || after == null) {
                             unknown = true
-                            emit(RunStep.Status("Connection dropped and the server history could not be read - not resending"))
+                            emit(RunStep.Status("Connection dropped and the server could not be asked - not sending again"))
                         } else if ((after - before).isNotEmpty()) {
                             settled = true
                             sent++
                             emit(RunStep.Sent(index, null, fee))
-                            emit(RunStep.Status("Connection dropped but the server confirms the transfer went through"))
+                            emit(RunStep.Status("Connection dropped - the server says it went through"))
                         } else {
-                            emit(RunStep.Status("Connection dropped, the server has no record - retrying the same send"))
+                            emit(RunStep.Status("Connection dropped - trying again"))
                             sleeper(5_000L, stop)
                         }
                     }
@@ -248,24 +248,31 @@ class TransferRunner(
  * Serves several recipients one after another: the full run of recipient one,
  * then the same amount for recipient two, and so on.
  */
+/** One recipient and how many sends are still owed to it. */
+data class RecipientRun(val name: String, val times: Int)
+
 suspend fun runRecipients(
     api: TransferApi,
-    recipients: List<String>,
+    recipients: List<RecipientRun>,
     amount: Long,
-    times: Int,
     note: String?,
     sleeper: suspend (Long, () -> Boolean) -> Boolean = ::realSleep,
     stop: () -> Boolean,
     paused: () -> Boolean,
-    emit: suspend (String, RunStep) -> Unit
+    emit: suspend (String, RunStep) -> Unit,
+    onStart: suspend (Int, String) -> Unit = { _, _ -> }
 ) {
     var index = 0
-    for (name in recipients) {
+    for (target in recipients) {
         if (stop()) return
         index++
+        val name = target.name
+        val times = target.times
+        if (times <= 0) continue
         val tag = if (recipients.size > 1) "[$index/${recipients.size}] " else ""
         var fatal = false
         val runner = TransferRunner(api, sleeper)
+        onStart(index, name)
         runner.run(
             recipient = name,
             amount = amount,
