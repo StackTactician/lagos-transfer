@@ -1,107 +1,165 @@
 #!/usr/bin/env bash
 #
-# Claim incoming Lagos Life money without logging into the web client.
+# Claim incoming Lagos Life money over the API. No browser, no login page.
 #
-#   ./claim.sh <username>            password from EKO_PASSWORD or a prompt
-#   EKO_PASSWORD=secret ./claim.sh <username>
+#   ./claim.sh <username>                claim once
+#   ./claim.sh <username> --watch 30     keep claiming every 30 seconds
+#   ./claim.sh <username> --background   run detached, log to ~/.eko_claim_<user>.log
+#   ./claim.sh <username> --stop         stop the background loop
+#   ./claim.sh --all                     claim every account in ~/.eko_accounts
 #
-# It logs in over the API, shows what is waiting, claims it, then prints the
-# new balance and the money log (what the server took back, and what it gave
-# back). No browser, and the app's rule of never saving game state is kept:
-# a claim only ever credits the balance on the server.
-set -euo pipefail
+# Passwords: EKO_PASSWORD, or ~/.eko_accounts with one "user:password" per line.
+#
+# A claim only credits the balance on the server, it never sends a balance
+# back, so it cannot lose money the way a browser session that saves an old
+# balance does.
+set -uo pipefail
 
 BASE="${LAGOS_BASE:-https://lagoslife.app}"
-USER="${1:-}"
-if [ -z "$USER" ]; then
-  echo "usage: $(basename "$0") <username>" >&2
-  exit 1
-fi
-
-if [ -z "${EKO_PASSWORD:-}" ]; then
-  read -r -s -p "password for @$USER: " EKO_PASSWORD
-  echo
-fi
-
+ACCOUNTS_FILE="${EKO_ACCOUNTS:-$HOME/.eko_accounts}"
 JAR="$(mktemp)"
-trap 'rm -f "$JAR"' EXIT
+CLEANED=0
+cleanup() { [ "$CLEANED" = 0 ] && rm -f "$JAR"; CLEANED=1; }
+trap cleanup EXIT
+
+die() { echo "$*" >&2; exit 1; }
+
+password_for() {
+  local user="$1"
+  if [ -n "${EKO_PASSWORD:-}" ]; then echo "$EKO_PASSWORD"; return; fi
+  if [ -f "$ACCOUNTS_FILE" ]; then
+    local line
+    line="$(grep -E "^${user}:" "$ACCOUNTS_FILE" | head -1)"
+    if [ -n "$line" ]; then echo "${line#*:}"; return; fi
+  fi
+  read -r -s -p "password for @$user: " pw
+  echo
+  echo "$pw"
+}
 
 login() {
-  curl -sS --max-time 20 -c "$JAR" -X POST "$BASE/api/auth/login" \
+  local user="$1" pass="$2"
+  rm -f "$JAR"
+  local out
+  out="$(curl -sS --max-time 20 -c "$JAR" -X POST "$BASE/api/auth/login" \
     -H 'Content-Type: application/json' \
-    -d "{\"username\":\"$USER\",\"password\":\"$EKO_PASSWORD\"}" >/dev/null
+    -d "{\"username\":\"$user\",\"password\":\"$pass\"}")"
+  case "$out" in
+    *'"ok":true'*) return 0 ;;
+    *) echo "login failed for @$user: ${out:0:120}" >&2; return 1 ;;
+  esac
 }
 
 api_post() {
   curl -sS --max-time 25 -b "$JAR" -X POST "$BASE$1" \
-    -H 'Content-Type: application/json' -H 'Accept: application/json' \
-    -d "$2"
+    -H 'Content-Type: application/json' -H 'Accept: application/json' -d "$2"
 }
 
 api_get() {
   curl -sS --max-time 25 -b "$JAR" "$BASE$1" -H 'Accept: application/json'
 }
 
-login
-
-echo "== before =="
-api_get "/api/save" | python3 -c '
+balance() {
+  api_get "/api/save" | python3 -c '
 import json,sys
-d=json.load(sys.stdin); g=d.get("game") or {}
-print("balance:", g.get("money"))
+try:
+    d=json.load(sys.stdin); g=d.get("game") or {}
+    print(g.get("money"))
+except Exception:
+    print("?")
 '
+}
 
-echo
-echo "== waiting to be claimed =="
-api_post "/api/family" '{"action":"history"}' | python3 -c '
+# claims once, prints only when something was actually credited
+claim_once() {
+  local user="$1" quiet="${2:-0}"
+  local res total
+  res="$(api_post "/api/family" '{"action":"claim"}')"
+  total="$(printf '%s' "$res" | python3 -c '
+import json,sys
+try:
+    d=json.load(sys.stdin)
+    got=d.get("received",[])
+    print(sum(g.get("amount",0) for g in got))
+except Exception:
+    print(0)
+')"
+  if [ "$total" != "0" ] && [ -n "$total" ]; then
+    echo "$(date '+%d %b %H:%M:%S')  claimed $total for @$user   balance now $(balance)"
+    printf '%s' "$res" | python3 -c '
 import json,sys
 d=json.load(sys.stdin)
-items=d.get("items",[])
-wait=[i for i in items if not i.get("sent") and not i.get("received") and i.get("status")=="waiting"]
-if not wait:
-    print("nothing waiting")
-for i in wait:
-    print("  %s -> %s  %s" % (i.get("id"), i.get("who"), i.get("amount")))
-print("total waiting:", sum(i.get("amount",0) for i in wait))
+for g in d.get("received",[]):
+    print("    +%s from %s" % (g.get("amount"), g.get("from")))
 '
+  elif [ "$quiet" = "0" ]; then
+    echo "$(date '+%d %b %H:%M:%S')  nothing waiting for @$user   balance $(balance)"
+  fi
+}
 
-echo
-echo "== claiming =="
-api_post "/api/family" '{"action":"claim"}' | python3 -c '
-import json,sys
-d=json.load(sys.stdin)
-got=d.get("received",[])
-if not got:
-    print("nothing was credited:", d.get("error",""))
-for g in got:
-    print("  +%s from %s" % (g.get("amount"), g.get("from")))
-print("claimed total:", sum(g.get("amount",0) for g in got))
-'
+watch_loop() {
+  local user="$1" every="$2"
+  local pass
+  pass="$(password_for "$user")"
+  login "$user" "$pass" || exit 1
+  echo "watching @$user every ${every}s, ctrl-c to stop"
+  while true; do
+    claim_once "$user" 1
+    sleep "$every"
+    # the session can expire, log in again if it does
+    if ! api_post "/api/family" '{"action":"history"}' | grep -q '"items"'; then
+      login "$user" "$pass" || true
+    fi
+  done
+}
 
-echo
-echo "== after =="
-api_get "/api/save" | python3 -c '
-import json,sys
-d=json.load(sys.stdin); g=d.get("game") or {}
-print("balance:", g.get("money"))
-'
+background_loop() {
+  local user="$1" every="$2"
+  local log="$HOME/.eko_claim_${user}.log"
+  local pidf="$HOME/.eko_claim_${user}.pid"
+  if [ -f "$pidf" ] && kill -0 "$(cat "$pidf")" 2>/dev/null; then
+    echo "already running (pid $(cat "$pidf"))"; exit 0
+  fi
+  nohup "$0" "$user" --watch "$every" >>"$log" 2>&1 &
+  echo $! > "$pidf"
+  echo "started, pid $(cat "$pidf"), log $log"
+}
 
-echo
-echo "== money log (what the server took back and returned) =="
-api_post "/api/family" '{"action":"history"}' | python3 -c '
-import json,sys,datetime
-d=json.load(sys.stdin)
-names={"money":"the server could not confirm it, took it back",
-       "moneyBack":"the server took it by mistake, returned it",
-       "refused":"transfer refused, it went back to the sender",
-       "addedTransfer":"sent to you, your phone had not collected it",
-       "addedCredit":"top up, refund or payout you had not seen",
-       "tookSend":"a payment you made came off a save that did not show it"}
-log=d.get("log",[])
-if not log:
-    print("empty")
-for e in log[:25]:
-    t=datetime.datetime.fromtimestamp(e.get("at",0)/1000).strftime("%d %b %H:%M")
-    k=e.get("k")
-    print("  %s  %12s  %s" % (t, e.get("a"), names.get(k,k)))
-'
+stop_loop() {
+  local user="$1"
+  local pidf="$HOME/.eko_claim_${user}.pid"
+  if [ -f "$pidf" ]; then
+    kill "$(cat "$pidf")" 2>/dev/null && echo "stopped" || echo "not running"
+    rm -f "$pidf"
+  else
+    echo "not running"
+  fi
+}
+
+case "${1:-}" in
+  --all)
+    [ -f "$ACCOUNTS_FILE" ] || die "no $ACCOUNTS_FILE"
+    while IFS=: read -r u p; do
+      [ -z "$u" ] && continue
+      export EKO_PASSWORD="$p"
+      login "$u" "$p" || continue
+      claim_once "$u" 0
+    done < "$ACCOUNTS_FILE"
+    ;;
+  "")
+    die "usage: $(basename "$0") <username> [--watch [secs] | --background | --stop]"
+    ;;
+  *)
+    USER="$1"; shift
+    case "${1:-}" in
+      --watch)      watch_loop "$USER" "${2:-30}" ;;
+      --background) background_loop "$USER" "${2:-30}" ;;
+      --stop)       stop_loop "$USER" ;;
+      *)
+        PASS="$(password_for "$USER")"
+        login "$USER" "$PASS" || exit 1
+        claim_once "$USER" 0
+        ;;
+    esac
+    ;;
+esac
