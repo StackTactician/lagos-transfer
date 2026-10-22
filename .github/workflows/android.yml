@@ -36,7 +36,11 @@ jobs:
           tag_name: latest
           name: latest
           make_latest: true
-          generate_release_notes: true
+          body: |
+            Eko Aza - transfer client for Lagos Life.
+
+            Built by Mubarak Mustapha.
+            Full changelog: https://github.com/StackTactician/lagos-transfer/commits/main
           files: app/build/outputs/apk/release/*.apk
       - name: Release to preview (branch)
         if: github.ref != 'refs/heads/main'
@@ -45,5 +49,10 @@ jobs:
           tag_name: preview
           name: preview
           make_latest: false
-          generate_release_notes: true
+          body: |
+            Eko Aza - transfer client for Lagos Life.
+
+            Preview build from the branch.
+            Built by Mubarak Mustapha.
+            Full changelog: https://github.com/StackTactician/lagos-transfer/commits/feat/true-parallel
           files: app/build/outputs/apk/release/*.apk
