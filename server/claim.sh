@@ -24,17 +24,41 @@ trap cleanup EXIT
 
 die() { echo "$*" >&2; exit 1; }
 
+# Passwords come from, in order: --pass, EKO_PASSWORD, ~/.eko_accounts.
+# If there is no terminal to type into, it says how to set it instead of hanging.
 password_for() {
   local user="$1"
-  if [ -n "${EKO_PASSWORD:-}" ]; then echo "$EKO_PASSWORD"; return; fi
+  if [ -n "${EKO_PASSWORD:-}" ]; then echo "$EKO_PASSWORD"; return 0; fi
   if [ -f "$ACCOUNTS_FILE" ]; then
     local line
     line="$(grep -E "^${user}:" "$ACCOUNTS_FILE" | head -1)"
-    if [ -n "$line" ]; then echo "${line#*:}"; return; fi
+    if [ -n "$line" ]; then echo "${line#*:}"; return 0; fi
   fi
-  read -r -s -p "password for @$user: " pw
-  echo
-  echo "$pw"
+  if [ -t 0 ]; then
+    local pw
+    read -r -s -p "password for @$user: " pw
+    echo
+    echo "$pw"
+    return 0
+  fi
+  echo "" # no password, login will fail with a clear message
+}
+
+save_password() {
+  local user="$1" pass="$2"
+  if [ -z "$user" ] || [ -z "$pass" ]; then
+    echo "usage: $(basename "$0") --set <username> <password>" >&2
+    exit 1
+  fi
+  touch "$ACCOUNTS_FILE"
+  chmod 600 "$ACCOUNTS_FILE"
+  local tmp
+  tmp="$(mktemp)"
+  grep -v "^${user}:" "$ACCOUNTS_FILE" > "$tmp" 2>/dev/null || true
+  echo "${user}:${pass}" >> "$tmp"
+  mv "$tmp" "$ACCOUNTS_FILE"
+  chmod 600 "$ACCOUNTS_FILE"
+  echo "saved @$user in $ACCOUNTS_FILE"
 }
 
 login() {
@@ -146,8 +170,20 @@ case "${1:-}" in
       claim_once "$u" 0
     done < "$ACCOUNTS_FILE"
     ;;
+  --set)
+    save_password "${2:-}" "${3:-}"
+    ;;
+  --list)
+    if [ -f "$ACCOUNTS_FILE" ]; then
+      cut -d: -f1 "$ACCOUNTS_FILE" | sed 's/^/@/'
+    else
+      echo "no accounts saved yet"
+    fi
+    ;;
   "")
-    die "usage: $(basename "$0") <username> [--watch [secs] | --background | --stop]"
+    die "usage: $(basename "$0") <username> [--watch [secs] | --background | --stop | --pass <password>]
+       $(basename "$0") --set <username> <password>
+       $(basename "$0") --list"
     ;;
   *)
     USER="$1"; shift
@@ -155,8 +191,20 @@ case "${1:-}" in
       --watch)      watch_loop "$USER" "${2:-30}" ;;
       --background) background_loop "$USER" "${2:-30}" ;;
       --stop)       stop_loop "$USER" ;;
+      --pass)
+        export EKO_PASSWORD="${2:-}"
+        PASS="$EKO_PASSWORD"
+        login "$USER" "$PASS" || exit 1
+        claim_once "$USER" 0
+        ;;
       *)
         PASS="$(password_for "$USER")"
+        if [ -z "$PASS" ]; then
+          echo "No password for @$USER." >&2
+          echo "Save it once:  $(basename "$0") --set $USER 'yourpassword'" >&2
+          echo "or run once with:  $(basename "$0") $USER --pass 'yourpassword'" >&2
+          exit 1
+        fi
         login "$USER" "$PASS" || exit 1
         claim_once "$USER" 0
         ;;
