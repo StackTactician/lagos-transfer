@@ -345,7 +345,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 s.sentVolume = s.sentVolume + amount
                 s.total = s.total.coerceAtLeast(step.index)
                 s.status = "Sent ${s.sent} of ${s.total}"
-                val line = "${s.sent}/${s.total} · ${naira(amount)} → @$recipient" +
+                val line = "${s.sent}/${s.total} · sent ${naira(amount)} to @$recipient" +
                     (if (step.id != null) "" else " (recovered)")
                 s.log = listOf(line) + s.log.take(100)
                 withContext(Dispatchers.IO) {
@@ -353,12 +353,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 TransferNotify.showProgress(
                     app, username, s.sent, s.total, amount,
-                    "Sent ${s.sent}/${s.total}" + if (step.fee > 0) " · fee ${naira(step.fee)}" else ""
+                    "sent to @$recipient" + if (step.fee > 0) " · fee ${naira(step.fee)}" else ""
                 )
             }
             is RunStep.Skipped -> {
                 s.status = "Failed ${step.index} - ${step.reason}"
-                s.log = listOf("${step.index}/${times} · @$recipient · ${step.reason}") + s.log.take(100)
+                s.log = listOf("${step.index}/${times} · could not send ${naira(amount)} to @$recipient - ${step.reason}") + s.log.take(100)
                 TransferNotify.showError(app, username, step.reason)
                 withContext(Dispatchers.IO) {
                     db.insert(username, recipient, amount, "failed", step.index - 1, times - step.index, amount * (times - step.index))

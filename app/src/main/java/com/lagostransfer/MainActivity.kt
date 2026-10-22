@@ -633,8 +633,8 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
                     } else {
                         ui.ledger.take(8).forEach { t ->
                             val state = if (t.received || t.status == "delivered") "claimed" else "waiting to be claimed"
-                            val arrow = if (t.sent) "\u2192" else "\u2190"
-                            Text("$arrow @${t.who} ${naira(t.amount)} \u00b7 $state", style = MaterialTheme.typography.labelSmall)
+                            val line = if (t.sent) "sent ${naira(t.amount)} to @${t.who}" else "received ${naira(t.amount)} from @${t.who}"
+                            Text("$line \u00b7 $state", style = MaterialTheme.typography.labelSmall)
                         }
                     }
                 }
@@ -669,7 +669,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
         }
         item {
             Text("Send money", fontWeight = FontWeight.Bold)
-            Text("One or many recipients - each one is served in turn - 32s between sends - a lost connection is checked with the server before any retry", style = MaterialTheme.typography.labelSmall)
+            Text("One recipient or many, served one after the other.", style = MaterialTheme.typography.labelSmall)
         }
         item {
             OutlinedTextField(recipient, { ui.recipient = it.trim(); ui.resolved = "" }, label = { Text("Recipient username(s)") }, placeholder = { Text("adewale, chidi or space separated") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
@@ -828,7 +828,7 @@ fun HistoryPage(vm: AppViewModel) {
                     ElevatedCard(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text(
-                                "${e.transferred}/${e.transferred + e.remaining} · ${naira(e.amount)} → @${e.recipient} · ${e.status}",
+                                "${e.transferred}/${e.transferred + e.remaining} · sent ${naira(e.amount)} to @${e.recipient} · ${e.status}",
                                 fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodySmall
                             )
                             Text(

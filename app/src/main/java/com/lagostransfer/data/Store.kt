@@ -78,7 +78,7 @@ class LogDb(ctx: Context) : SQLiteOpenHelper(ctx, "transfer_logs.db", null, 2) {
         val out = mutableListOf<String>()
         while (c.moveToNext()) {
             val total = c.getInt(4) + c.getInt(5)
-            out.add("${c.getInt(4)}/$total · ₦${c.getLong(2)} → @${c.getString(1)} · ${c.getString(3)}")
+            out.add("${c.getInt(4)}/$total · sent ₦${c.getLong(2)} to @${c.getString(1)} · ${c.getString(3)}")
         }
         c.close(); return out
     }
