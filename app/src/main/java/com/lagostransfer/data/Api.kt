@@ -99,7 +99,7 @@ class LagosClient(
         private val JSON = "application/json".toMediaType()
 
         const val MIN_SEND = 100L
-        const val MAX_SEND = 10_000_000_000L
+        const val MAX_SEND = 100_000_000_000L
         const val MIN_NOTE_LEN = 3
 
         /** Server refuses a second send on the same account inside 30s. */
