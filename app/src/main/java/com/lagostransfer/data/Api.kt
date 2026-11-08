@@ -101,6 +101,17 @@ class LagosClient(
      */
     @Volatile private var skewMs: Long = 0L
 
+    /** RFC 1123 parser for the Date header every response carries. */
+    private val httpDate = java.text.SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss zzz", java.util.Locale.US).apply {
+        timeZone = java.util.TimeZone.getTimeZone("GMT")
+    }
+
+    private fun learnClockFromHeader(res: Response) {
+        val raw = res.header("Date") ?: return
+        val t = try { synchronized(httpDate) { httpDate.parse(raw)?.time } } catch (_: Exception) { null }
+        if (t != null && t > 0L) skewMs = t - System.currentTimeMillis()
+    }
+
     private fun learnClock(text: String) {
         val n = try { JSONObject(text).optLong("now", 0L) } catch (_: Exception) { 0L }
         if (n > 0) skewMs = n - System.currentTimeMillis()
@@ -164,6 +175,7 @@ class LagosClient(
 
     /** Keeps rotated session cookies in the jar - the server rewrites them on some calls. */
     private fun capture(res: Response) {
+        learnClockFromHeader(res)
         val cookies = res.headers("set-cookie")
         if (cookies.isEmpty()) return
         synchronized(jar) {
