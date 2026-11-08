@@ -91,6 +91,13 @@ class LagosClient(
     /** Last code we handed the server, so we never replay one inside the same 30s window. */
     private var lastTotpCode: String? = null
 
+    /** Set when the server wants a code we cannot make - the user answers this one. */
+    @Volatile private var pendingChallenge: String? = null
+    @Volatile private var pendingMethod: String? = null
+
+    val needsSecondFactor: Boolean get() = pendingChallenge != null
+    fun secondFactorMethod(): String? = pendingMethod
+
     companion object {
         private const val USER_AGENT = "Mozilla/5.0 (Linux; Android 12) EkoAza/1.0"
 
@@ -180,8 +187,11 @@ class LagosClient(
             val j = try { JSONObject(text) } catch (_: Exception) { JSONObject() }
             // Password is right, but the account wants its second factor.
             if (j.optString("code") != "two_factor") return@withContext false
+            pendingChallenge = j.optString("challenge")
+            pendingMethod = j.optString("method", "app")
+            // No secret on this device: the owner has to give us the code.
             val secret = totpSecret ?: return@withContext false
-            if (j.optString("method", "app") != "app") return@withContext false
+            if (pendingMethod != "app") return@withContext false
 
             val c = nextTotpCode() ?: return@withContext false
             val payload = JSONObject()
@@ -192,6 +202,30 @@ class LagosClient(
         } catch (_: Exception) {
             false
         }
+    }
+
+    /**
+     * Finish a login the owner answered by hand. Accepts a 6-digit authenticator
+     * code or one of the account's backup codes.
+     */
+    suspend fun loginWithCode(code: String): Boolean = withContext(Dispatchers.IO) {
+        val ch = pendingChallenge ?: return@withContext false
+        val c = code.trim().replace(" ", "")
+        if (c.length !in 6..10) return@withContext false
+        val r = post2fa(JSONObject().put("action", "login").put("challenge", ch).put("code", c))
+        if (r.code in 200..299) {
+            pendingChallenge = null
+            pendingMethod = null
+            true
+        } else {
+            false
+        }
+    }
+
+    /** Forget a challenge that went stale, so a retry starts clean. */
+    fun clearSecondFactor() {
+        pendingChallenge = null
+        pendingMethod = null
     }
 
     /** A code the server has not already seen in this window. */

@@ -34,6 +34,16 @@ data class RunPlan(
     val finished: Boolean get() = done >= total
 }
 
+/** What happened when an account was added. */
+sealed class AddOutcome {
+    object Ok : AddOutcome()
+
+    /** Password was accepted; the server wants a code before the session exists. */
+    data class NeedCode(val method: String) : AddOutcome()
+
+    data class Error(val message: String) : AddOutcome()
+}
+
 class UiState {
     var busy by mutableStateOf(false)
     var status by mutableStateOf("")
@@ -62,6 +72,7 @@ class UiState {
     var twoStepMethod by mutableStateOf<String?>(null)
     var twoStepBusy by mutableStateOf(false)
     var twoStepSetup by mutableStateOf<AppTwoStepStart?>(null)
+    var hasSecret by mutableStateOf(false)
     var backupCodes by mutableStateOf(listOf<String>())
     var twoStepNote by mutableStateOf("")
 }
@@ -97,7 +108,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         val acc = SessionAccount(u, pp, pin, cli)
                         cli.onAuthLost = {
                             acc.enabled = false
-                            getUi(u).lastError = "Session lost - log in again from Master"
+                            getUi(u).lastError = if (cli.needsSecondFactor)
+                                "Session expired - this account wants a code. Log in again from Master."
+                            else "Session lost - log in again from Master"
                         }
                         accounts.add(acc)
                         val s = getUi(u)
@@ -171,17 +184,28 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Adds an account and stores it encrypted. Returns an error message, or null on success. */
-    suspend fun addAccount(username: String, password: String, pin: String?): String? {
+    /** Adds an account and stores it encrypted. */
+    suspend fun addAccount(username: String, password: String, pin: String?, code: String? = null): AddOutcome {
         val u = username.trim()
-        if (u.isEmpty() || password.isEmpty()) return "Username and password are needed"
-        if (accounts.any { it.username == u }) return "Account @$u already added"
-        val cli = LagosClient(u, password, pin)
-        if (!cli.login()) return "Could not log in - check username and password"
+        if (u.isEmpty() || password.isEmpty()) return AddOutcome.Error("Username and password are needed")
+        if (accounts.any { it.username == u }) return AddOutcome.Error("Account @$u already added")
+        val secret = withContext(Dispatchers.IO) { SecureStore.loadTotpSecret(app, u) }
+        val cli = LagosClient(u, password, pin, secret)
+        val loggedIn = cli.login() || (!code.isNullOrBlank() && cli.loginWithCode(code))
+        if (!loggedIn) {
+            // Never blame the password when the server is asking for a code.
+            return if (cli.needsSecondFactor) {
+                AddOutcome.NeedCode(cli.secondFactorMethod() ?: "app")
+            } else {
+                AddOutcome.Error("Could not log in - check username and password")
+            }
+        }
         val acc = SessionAccount(u, password, pin, cli)
         cli.onAuthLost = {
             acc.enabled = false
-            getUi(u).lastError = "Session lost - log in again from Master"
+            getUi(u).lastError = if (cli.needsSecondFactor)
+                "Session expired - this account wants a code. Log in again from Master."
+            else "Session lost - log in again from Master"
         }
         try { acc.balance = cli.getBalance() } catch (_: Exception) {}
         withContext(Dispatchers.IO) {
@@ -193,7 +217,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         s.balanceText = acc.balance?.let { naira(it.money) } ?: "-"
         s.canSendText = acc.balance?.canSend?.let { naira(it) } ?: "-"
         loadIncoming(u)
-        return null
+        return AddOutcome.Ok
     }
 
     fun removeAccount(username: String) {
@@ -211,6 +235,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val acc = accounts.find { it.username == username } ?: return
         val s = getUi(username)
         viewModelScope.launch {
+            s.hasSecret = withContext(Dispatchers.IO) { SecureStore.hasTotpSecret(app, username) }
             try {
                 val st = acc.client.twoStepState()
                 if (!st.unknown) {
@@ -265,6 +290,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 s.backupCodes = done.backupCodes
                 s.twoStepSetup = null
                 s.twoStepOn = true
+                s.hasSecret = true
                 s.twoStepMethod = "app"
                 s.twoStepNote = "Two-step is on for @$username"
                 onDone(null)
@@ -279,6 +305,41 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun dismissBackupCodes(username: String) {
         getUi(username).backupCodes = emptyList()
+    }
+
+    /**
+     * Attach a secret the owner already has (their authenticator app shows it,
+     * or they kept it from setup). This is the only way an account that is
+     * already enrolled can be answered automatically afterwards.
+     */
+    fun attachTotpSecret(username: String, secret: String, onDone: (String?) -> Unit) {
+        val acc = accounts.find { it.username == username } ?: return onDone("Account not found")
+        val clean = secret.trim().replace(" ", "").replace("-", "").uppercase()
+        if (!Totp.isPlausibleSecret(clean)) return onDone("That does not look like a base32 secret")
+        viewModelScope.launch {
+            try {
+                // Prove it with a real login before saving: a login only succeeds
+                // when the server accepts the code this secret produced.
+                acc.client.adoptTotpSecret(clean)
+                if (!acc.client.login()) {
+                    acc.client.adoptTotpSecret(null)
+                    onDone("The server did not accept a code from that secret")
+                    return@launch
+                }
+                withContext(Dispatchers.IO) {
+                    SecureStore.saveTotpSecret(app, username, clean)
+                    SecureStore.saveCookies(app, username, acc.client.exportCookies())
+                }
+                val s = getUi(username)
+                s.twoStepOn = true
+                s.hasSecret = true
+                s.twoStepNote = "Secret attached - codes are made on this phone now"
+                onDone(null)
+            } catch (e: Exception) {
+                acc.client.adoptTotpSecret(null)
+                onDone(friendlyError(e))
+            }
+        }
     }
 
     fun refreshBalance(username: String, onError: ((String) -> Unit)? = null) {

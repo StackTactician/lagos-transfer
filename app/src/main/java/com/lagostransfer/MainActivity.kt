@@ -324,6 +324,9 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
     var password by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    // Only used when the server asks for a second factor during login.
+    var code by remember { mutableStateOf("") }
+    var askingCode by remember { mutableStateOf(false) }
     var refreshingAll by remember { mutableStateOf(false) }
     var updateInfo by remember { mutableStateOf<UpdateChecker.Info?>(null) }
     var updating by remember { mutableStateOf(false) }
@@ -461,6 +464,20 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
             OutlinedTextField(username, { username = it }, label = { Text("Username") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             OutlinedTextField(password, { password = it }, label = { Text("Password") }, modifier = Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation())
             OutlinedTextField(pin, { pin = it }, label = { Text("PIN (if you set one)") }, modifier = Modifier.fillMaxWidth(), singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), visualTransformation = PasswordVisualTransformation())
+            if (askingCode) {
+                Spacer(Modifier.height(4.dp))
+                OutlinedTextField(
+                    code,
+                    { code = it.trim().take(10) },
+                    label = { Text("Code from your authenticator or backup list") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                Text(
+                    "The password was accepted. This account wants a second step before the session starts.",
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
             Spacer(Modifier.height(8.dp))
             Button(
                 enabled = !busy && username.isNotBlank() && password.isNotBlank(),
@@ -473,13 +490,20 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
                     }
                     busy = true
                     scope.launch {
-                        val err = vm.addAccount(u, password, pin.ifBlank { null })
-                        if (err != null) {
-                            snacks.showSnackbar(err)
-                        } else {
-                            val bal = vm.accounts.find { it.username == u }?.balance
-                            snacks.showSnackbar("Logged in @$u" + (bal?.let { " - ${naira(it.money)}" } ?: ""))
-                            username = ""; password = ""; pin = ""
+                        when (val outcome = vm.addAccount(u, password, pin.ifBlank { null }, code.ifBlank { null })) {
+                            is AddOutcome.Ok -> {
+                                val bal = vm.accounts.find { it.username == u }?.balance
+                                snacks.showSnackbar("Logged in @$u" + (bal?.let { " - ${naira(it.money)}" } ?: ""))
+                                username = ""; password = ""; pin = ""; code = ""; askingCode = false
+                            }
+                            is AddOutcome.NeedCode -> {
+                                askingCode = true
+                                snacks.showSnackbar(
+                                    if (outcome.method == "app") "Enter the 6-digit code from your authenticator"
+                                    else "Enter the code sent to the account's email"
+                                )
+                            }
+                            is AddOutcome.Error -> snacks.showSnackbar(outcome.message)
                         }
                         busy = false
                     }
@@ -599,6 +623,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
 
     // Password is only asked for at the moment of enrolment - never stored by the form.
     var tsPassword by remember(acc.username) { mutableStateOf("") }
+    var tsSecret by remember(acc.username) { mutableStateOf("") }
 
     LaunchedEffect(acc.username) {
         vm.refreshBalance(acc.username)
@@ -683,12 +708,36 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
                             },
                             modifier = Modifier.fillMaxWidth()
                         ) { Text(if (ui.twoStepBusy) "Confirming..." else "Confirm") }
+                    } else if (ui.twoStepOn && ui.twoStepMethod == "app" && ui.hasSecret) {
+                        Text(
+                            "This account asks for an authenticator code at login and on large sends. The app answers it from your own secret, kept on this phone.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    } else if (ui.twoStepOn && ui.twoStepMethod == "app") {
+                        Text(
+                            "Two-step is already on for this account, so you'll be asked for a code. Paste the account's authenticator secret to have the app answer it automatically - the secret stays on this phone.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        OutlinedTextField(
+                            tsSecret,
+                            { tsSecret = it },
+                            label = { Text("Authenticator secret (base32)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                        Button(
+                            enabled = tsSecret.isNotBlank(),
+                            onClick = {
+                                vm.attachTotpSecret(acc.username, tsSecret) { err ->
+                                    scope.launch { snacks.showSnackbar(err ?: "Secret attached") }
+                                    if (err == null) tsSecret = ""
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Attach secret") }
                     } else if (ui.twoStepOn) {
                         Text(
-                            if (ui.twoStepMethod == "app")
-                                "This account asks for an authenticator code at login and on large sends. The app answers it from your own secret."
-                            else
-                                "This account uses email codes. Nothing on the phone can replace that - only the account owner can.",
+                            "This account uses email codes. Nothing on the phone can replace that - only the account owner can.",
                             style = MaterialTheme.typography.bodySmall
                         )
                     } else {
