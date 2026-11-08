@@ -185,12 +185,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Adds an account and stores it encrypted. */
-    suspend fun addAccount(username: String, password: String, pin: String?, code: String? = null): AddOutcome {
+    suspend fun addAccount(
+        username: String,
+        password: String,
+        pin: String?,
+        code: String? = null,
+        secret: String? = null
+    ): AddOutcome {
         val u = username.trim()
         if (u.isEmpty() || password.isEmpty()) return AddOutcome.Error("Username and password are needed")
         if (accounts.any { it.username == u }) return AddOutcome.Error("Account @$u already added")
-        val secret = withContext(Dispatchers.IO) { SecureStore.loadTotpSecret(app, u) }
-        val cli = LagosClient(u, password, pin, secret)
+        val stored = withContext(Dispatchers.IO) { SecureStore.loadTotpSecret(app, u) }
+        val pasted = secret?.trim()?.replace(" ", "")?.replace("-", "")?.uppercase()
+            ?.takeIf { it.isNotBlank() && Totp.isPlausibleSecret(it) }
+        val cli = LagosClient(u, password, pin, stored ?: pasted)
         val loggedIn = cli.login() || (!code.isNullOrBlank() && cli.loginWithCode(code))
         if (!loggedIn) {
             // Never blame the password when the server is asking for a code.
@@ -211,6 +219,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         withContext(Dispatchers.IO) {
             SecureStore.saveAccount(app, u, password, pin)
             SecureStore.saveCookies(app, u, cli.exportCookies())
+            // Only keep a secret we just proved with a successful login.
+            if (stored == null && pasted != null) SecureStore.saveTotpSecret(app, u, pasted)
         }
         accounts.add(acc)
         val s = getUi(u)

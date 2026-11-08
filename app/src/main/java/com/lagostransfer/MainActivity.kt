@@ -327,6 +327,8 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
     // Only used when the server asks for a second factor during login.
     var code by remember { mutableStateOf("") }
     var askingCode by remember { mutableStateOf(false) }
+    // Optional: the account's own authenticator secret, so no code is needed by hand.
+    var addSecret by remember { mutableStateOf("") }
     var refreshingAll by remember { mutableStateOf(false) }
     var updateInfo by remember { mutableStateOf<UpdateChecker.Info?>(null) }
     var updating by remember { mutableStateOf(false) }
@@ -464,6 +466,13 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
             OutlinedTextField(username, { username = it }, label = { Text("Username") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             OutlinedTextField(password, { password = it }, label = { Text("Password") }, modifier = Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation())
             OutlinedTextField(pin, { pin = it }, label = { Text("PIN (if you set one)") }, modifier = Modifier.fillMaxWidth(), singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), visualTransformation = PasswordVisualTransformation())
+            OutlinedTextField(
+                addSecret,
+                { addSecret = it },
+                label = { Text("Authenticator secret (only if two-step is already on)") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
             if (askingCode) {
                 Spacer(Modifier.height(4.dp))
                 OutlinedTextField(
@@ -490,11 +499,11 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
                     }
                     busy = true
                     scope.launch {
-                        when (val outcome = vm.addAccount(u, password, pin.ifBlank { null }, code.ifBlank { null })) {
+                        when (val outcome = vm.addAccount(u, password, pin.ifBlank { null }, code.ifBlank { null }, addSecret.ifBlank { null })) {
                             is AddOutcome.Ok -> {
                                 val bal = vm.accounts.find { it.username == u }?.balance
                                 snacks.showSnackbar("Logged in @$u" + (bal?.let { " - ${naira(it.money)}" } ?: ""))
-                                username = ""; password = ""; pin = ""; code = ""; askingCode = false
+                                username = ""; password = ""; pin = ""; code = ""; askingCode = false; addSecret = ""
                             }
                             is AddOutcome.NeedCode -> {
                                 askingCode = true
@@ -684,10 +693,26 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
                             Text("I have saved them")
                         }
                     } else if (setup != null) {
-                        Text("1. Add this secret to your authenticator", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Tap Confirm and the app finishes the whole thing itself - it makes the code from the new secret on this phone. No other authenticator app is needed.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Button(
+                            enabled = !ui.twoStepBusy,
+                            onClick = {
+                                vm.confirmAppTwoStep(acc.username) { err ->
+                                    scope.launch { snacks.showSnackbar(err ?: "Two-step is on") }
+                                    if (err == null) tsPassword = ""
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text(if (ui.twoStepBusy) "Finishing..." else "Confirm and finish") }
+                        Text(
+                            "Optional: keep a copy of this secret somewhere else, in case this phone is lost.",
+                            style = MaterialTheme.typography.labelSmall
+                        )
                         Text(setup.secret, style = MaterialTheme.typography.bodyMedium)
                         if (setup.uri.isNotBlank()) {
-                            Text(setup.uri, style = MaterialTheme.typography.labelSmall)
                             TextButton(onClick = {
                                 val cb = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                                 cb.setPrimaryClip(android.content.ClipData.newPlainText("otpauth", setup.uri))
@@ -695,19 +720,9 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
                             }) { Text("Copy setup URI") }
                         }
                         Text(
-                            "2. Then confirm. If confirming fails, the account can be left half set up - keep the secret.",
+                            "If confirming fails the account can be left half set up. Keep the secret and press Confirm again.",
                             style = MaterialTheme.typography.labelSmall
                         )
-                        Button(
-                            enabled = !ui.twoStepBusy,
-                            onClick = {
-                                vm.confirmAppTwoStep(acc.username) { err ->
-                                    scope.launch { snacks.showSnackbar(err ?: "Two-step is on") }
-                                    tsPassword = ""
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) { Text(if (ui.twoStepBusy) "Confirming..." else "Confirm") }
                     } else if (ui.twoStepOn && ui.twoStepMethod == "app" && ui.hasSecret) {
                         Text(
                             "This account asks for an authenticator code at login and on large sends. The app answers it from your own secret, kept on this phone.",
