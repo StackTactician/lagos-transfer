@@ -73,6 +73,7 @@ class UiState {
     var twoStepBusy by mutableStateOf(false)
     var twoStepSetup by mutableStateOf<AppTwoStepStart?>(null)
     var hasSecret by mutableStateOf(false)
+    var revealedSecret by mutableStateOf<String?>(null)
     var backupCodes by mutableStateOf(listOf<String>())
     var twoStepNote by mutableStateOf("")
 }
@@ -310,6 +311,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun dismissBackupCodes(username: String) {
         getUi(username).backupCodes = emptyList()
+    }
+
+    /** Reveal the secret we hold for this account, on request. */
+    fun revealSecret(username: String) {
+        viewModelScope.launch {
+            getUi(username).revealedSecret =
+                withContext(Dispatchers.IO) { SecureStore.loadTotpSecret(app, username) }
+        }
+    }
+
+    fun hideSecret(username: String) {
+        getUi(username).revealedSecret = null
     }
 
     /**

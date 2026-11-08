@@ -679,8 +679,12 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
                     val backups = ui.backupCodes
 
                     if (backups.isNotEmpty()) {
-                        Text("Backup codes - shown once. Keep them somewhere safe.", fontWeight = FontWeight.SemiBold)
+                        Text("Backup codes - shown once", fontWeight = FontWeight.SemiBold)
                         backups.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                        Text(
+                            "Save these outside this phone. They are the way back in if you lose it, and they cannot be shown again.",
+                            style = MaterialTheme.typography.labelSmall
+                        )
                         Button(onClick = { vm.dismissBackupCodes(acc.username) }, modifier = Modifier.fillMaxWidth()) {
                             Text("I have saved them")
                         }
@@ -704,7 +708,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
                         }
                         if (showSecret) {
                             Text(
-                                "Keep this somewhere safe in case the phone is lost. The app does not need it - it makes its own codes.",
+                                "Save this somewhere outside this phone now. This is the only copy, the server cannot give it to you again, and if this phone is lost or the app is reinstalled two-step will lock you out of the account.",
                                 style = MaterialTheme.typography.labelSmall
                             )
                             Text(setup.secret, style = MaterialTheme.typography.bodyMedium)
@@ -725,6 +729,25 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
                             "This account asks for an authenticator code at login and on large sends. The app answers it from your own secret, kept on this phone.",
                             style = MaterialTheme.typography.bodySmall
                         )
+                        val shown = ui.revealedSecret
+                        if (shown == null) {
+                            TextButton(onClick = { vm.revealSecret(acc.username) }) { Text("View saved secret") }
+                        } else {
+                            Text("Authenticator secret", fontWeight = FontWeight.SemiBold)
+                            Text(shown, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "Save this somewhere outside this phone now. This is the only copy, the server cannot give it to you again, and if this phone is lost or the app is reinstalled two-step will lock you out of @${acc.username}.",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = {
+                                    val cb = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                    cb.setPrimaryClip(android.content.ClipData.newPlainText("secret", shown))
+                                    scope.launch { snacks.showSnackbar("Secret copied") }
+                                }) { Text("Copy") }
+                                TextButton(onClick = { vm.hideSecret(acc.username) }) { Text("Hide") }
+                            }
+                        }
                     } else if (ui.twoStepOn && ui.twoStepMethod == "app") {
                         Text(
                             "Two-step is already on for this account, so you'll be asked for a code. Paste the account's authenticator secret to have the app answer it automatically - the secret stays on this phone.",
