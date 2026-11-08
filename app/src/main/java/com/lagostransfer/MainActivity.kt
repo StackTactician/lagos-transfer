@@ -327,8 +327,6 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
     // Only used when the server asks for a second factor during login.
     var code by remember { mutableStateOf("") }
     var askingCode by remember { mutableStateOf(false) }
-    // Optional: the account's own authenticator secret, so no code is needed by hand.
-    var addSecret by remember { mutableStateOf("") }
     var refreshingAll by remember { mutableStateOf(false) }
     var updateInfo by remember { mutableStateOf<UpdateChecker.Info?>(null) }
     var updating by remember { mutableStateOf(false) }
@@ -466,13 +464,6 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
             OutlinedTextField(username, { username = it }, label = { Text("Username") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             OutlinedTextField(password, { password = it }, label = { Text("Password") }, modifier = Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation())
             OutlinedTextField(pin, { pin = it }, label = { Text("PIN (if you set one)") }, modifier = Modifier.fillMaxWidth(), singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), visualTransformation = PasswordVisualTransformation())
-            OutlinedTextField(
-                addSecret,
-                { addSecret = it },
-                label = { Text("Authenticator secret (only if two-step is already on)") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
             if (askingCode) {
                 Spacer(Modifier.height(4.dp))
                 OutlinedTextField(
@@ -499,11 +490,11 @@ fun MasterPage(vm: AppViewModel, snacks: SnackbarHostState, onSelect: (String) -
                     }
                     busy = true
                     scope.launch {
-                        when (val outcome = vm.addAccount(u, password, pin.ifBlank { null }, code.ifBlank { null }, addSecret.ifBlank { null })) {
+                        when (val outcome = vm.addAccount(u, password, pin.ifBlank { null }, code.ifBlank { null })) {
                             is AddOutcome.Ok -> {
                                 val bal = vm.accounts.find { it.username == u }?.balance
                                 snacks.showSnackbar("Logged in @$u" + (bal?.let { " - ${naira(it.money)}" } ?: ""))
-                                username = ""; password = ""; pin = ""; code = ""; askingCode = false; addSecret = ""
+                                username = ""; password = ""; pin = ""; code = ""; askingCode = false
                             }
                             is AddOutcome.NeedCode -> {
                                 askingCode = true
@@ -633,6 +624,7 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
     // Password is only asked for at the moment of enrolment - never stored by the form.
     var tsPassword by remember(acc.username) { mutableStateOf("") }
     var tsSecret by remember(acc.username) { mutableStateOf("") }
+    var showSecret by remember(acc.username) { mutableStateOf(false) }
 
     LaunchedEffect(acc.username) {
         vm.refreshBalance(acc.username)
@@ -707,17 +699,22 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
                             },
                             modifier = Modifier.fillMaxWidth()
                         ) { Text(if (ui.twoStepBusy) "Finishing..." else "Confirm and finish") }
-                        Text(
-                            "Optional: keep a copy of this secret somewhere else, in case this phone is lost.",
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                        Text(setup.secret, style = MaterialTheme.typography.bodyMedium)
-                        if (setup.uri.isNotBlank()) {
-                            TextButton(onClick = {
-                                val cb = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                cb.setPrimaryClip(android.content.ClipData.newPlainText("otpauth", setup.uri))
-                                scope.launch { snacks.showSnackbar("Setup URI copied") }
-                            }) { Text("Copy setup URI") }
+                        TextButton(onClick = { showSecret = !showSecret }) {
+                            Text(if (showSecret) "Hide backup secret" else "Show backup secret (optional)")
+                        }
+                        if (showSecret) {
+                            Text(
+                                "Keep this somewhere safe in case the phone is lost. The app does not need it - it makes its own codes.",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                            Text(setup.secret, style = MaterialTheme.typography.bodyMedium)
+                            if (setup.uri.isNotBlank()) {
+                                TextButton(onClick = {
+                                    val cb = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                    cb.setPrimaryClip(android.content.ClipData.newPlainText("otpauth", setup.uri))
+                                    scope.launch { snacks.showSnackbar("Setup URI copied") }
+                                }) { Text("Copy setup URI") }
+                            }
                         }
                         Text(
                             "If confirming fails the account can be left half set up. Keep the secret and press Confirm again.",
