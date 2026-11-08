@@ -76,11 +76,20 @@ class LagosClient(
     private val username: String,
     private val password: String,
     private val pin: String?,
+    totpSecret: String? = null,
     private val base: String = "https://lagoslife.app"
 ) : TransferApi {
+    /** Only ever the owner's own secret, set at enrolment or restored from the Keystore store. */
+    @Volatile private var totpSecret: String? = totpSecret
     private val jar = mutableMapOf<String, String>()
     private val client = shared
     private val loginLock = Mutex()
+
+    fun adoptTotpSecret(secret: String?) { totpSecret = secret }
+    fun hasTotpSecret(): Boolean = !totpSecret.isNullOrBlank()
+
+    /** Last code we handed the server, so we never replay one inside the same 30s window. */
+    private var lastTotpCode: String? = null
 
     companion object {
         private const val USER_AGENT = "Mozilla/5.0 (Linux; Android 12) EkoAza/1.0"
@@ -149,6 +158,11 @@ class LagosClient(
         }
     }
 
+    /**
+     * Logs in, answering an app-method second factor when we hold the owner's
+     * own secret. Never guesses, never brute-forces - a wrong code burns the
+     * server's attempt budget and can pause codes on the account.
+     */
     suspend fun login(): Boolean = withContext(Dispatchers.IO) {
         try {
             val body = JSONObject(mapOf("username" to username, "password" to password)).toString()
@@ -158,12 +172,61 @@ class LagosClient(
                 .header("User-Agent", USER_AGENT).build()
             val res = client.newCall(req).execute()
             capture(res)
+            val text = res.body?.string() ?: ""
+            val code = res.code
             res.close()
-            res.code == 200
+            if (code == 200) return@withContext true
+
+            val j = try { JSONObject(text) } catch (_: Exception) { JSONObject() }
+            // Password is right, but the account wants its second factor.
+            if (j.optString("code") != "two_factor") return@withContext false
+            val secret = totpSecret ?: return@withContext false
+            if (j.optString("method", "app") != "app") return@withContext false
+
+            val c = nextTotpCode() ?: return@withContext false
+            val payload = JSONObject()
+                .put("action", "login")
+                .put("challenge", j.optString("challenge"))
+                .put("code", c)
+            post2fa(payload).code in 200..299
         } catch (_: Exception) {
             false
         }
     }
+
+    /** A code the server has not already seen in this window. */
+    private suspend fun nextTotpCode(): String? {
+        val secret = totpSecret ?: return null
+        if (!Totp.isPlausibleSecret(secret)) return null
+        var c = Totp.code(secret)
+        if (c == lastTotpCode) {
+            kotlinx.coroutines.delay(Totp.millisLeft() + 1_000L)
+            c = Totp.code(secret)
+        }
+        lastTotpCode = c
+        return c
+    }
+
+    private data class TwoFactorRaw(val code: Int, val body: String)
+
+    private fun post2fa(payload: JSONObject): TwoFactorRaw {
+        val req = Request.Builder().url("$base/api/auth/2fa")
+            .post(payload.toString().toRequestBody(JSON))
+            .header("Accept", "application/json")
+            .header("User-Agent", USER_AGENT)
+            .header("Cookie", cookieHeader())
+            .build()
+        val res = client.newCall(req).execute()
+        capture(res)
+        val text = res.body?.string() ?: ""
+        val code = res.code
+        res.close()
+        return TwoFactorRaw(code, text)
+    }
+
+    private fun errorCodeOf(body: String): String = try { JSONObject(body).optString("code") } catch (_: Exception) { "" }
+    private fun challengeOf(body: String): String = try { JSONObject(body).optString("challenge") } catch (_: Exception) { "" }
+    private fun errorOf(body: String): String = try { JSONObject(body).optString("error") } catch (_: Exception) { "" }
 
     private data class HttpResult(val code: Int, val body: String)
 
@@ -183,6 +246,30 @@ class LagosClient(
         var code = res.code
         var text = res.body?.string() ?: ""
         res.close()
+
+        // The action itself wants a second factor (usually a large send).
+        val kind = if (code in 400..499) errorCodeOf(text) else ""
+        if (kind == "two_factor" || kind == "two_factor_step") {
+            val c = nextTotpCode()
+            if (c != null) {
+                val payload = if (kind == "two_factor") {
+                    JSONObject().put("action", "login")
+                        .put("challenge", challengeOf(text))
+                        .put("code", c)
+                } else {
+                    JSONObject().put("action", "step").put("code", c)
+                }
+                val solved = post2fa(payload)
+                if (solved.code in 200..299) {
+                    res = client.newCall(build()).execute()
+                    capture(res)
+                    code = res.code
+                    text = res.body?.string() ?: ""
+                    res.close()
+                }
+            }
+        }
+
         if (code == 401 && !isPinProblem(text)) {
             val back = loginLock.withLock { login() }
             if (back) {
@@ -327,4 +414,60 @@ class LagosClient(
             ambiguous = res.code >= 500
         )
     }
+
+    // ---- App-method two-step enrolment (opt-in, per account) ---------------
+
+    /**
+     * Step 1: ask the server for a fresh authenticator secret for THIS account.
+     * The caller must show the user the secret/URI before anything is confirmed.
+     */
+    suspend fun startAppTwoStep(password: String): AppTwoStepStart = withContext(Dispatchers.IO) {
+        val r = post2fa(JSONObject().put("action", "setup_app").put("password", password))
+        if (r.code !in 200..299) throw ApiException(r.code, errorOf(r.body).ifBlank { "Couldn't start setup (${r.code})" }, errorCodeOf(r.body))
+        val j = JSONObject(r.body.ifBlank { "{}" })
+        val secret = j.optString("secret")
+        if (secret.isBlank()) throw ApiException(r.code, "Server sent no secret")
+        AppTwoStepStart(secret = secret, uri = j.optString("uri"))
+    }
+
+    /**
+     * Step 2: confirm with a code from that secret and collect the backup codes.
+     * Takes the secret explicitly - the account's own stored secret is not it yet.
+     */
+    suspend fun confirmAppTwoStep(secret: String, atMillis: Long = System.currentTimeMillis()): AppTwoStepDone = withContext(Dispatchers.IO) {
+        val code = Totp.code(secret, atMillis)
+        val r = post2fa(JSONObject().put("action", "confirm").put("method", "app").put("code", code))
+        if (r.code !in 200..299) throw ApiException(r.code, errorOf(r.body).ifBlank { "That code was not accepted" }, errorCodeOf(r.body))
+        val j = JSONObject(r.body.ifBlank { "{}" })
+        val arr = j.optJSONArray("backup")
+        val codes = if (arr == null) emptyList() else (0 until arr.length()).map { arr.optString(it) }
+        AppTwoStepDone(backupCodes = codes.filter { it.isNotBlank() })
+    }
+
+    /** What the account currently has switched on, so we never overwrite an existing factor. */
+    suspend fun twoStepState(): TwoStepState = withContext(Dispatchers.IO) {
+        val req = Request.Builder().url("$base/api/auth/2fa").get()
+            .header("Accept", "application/json")
+            .header("Cookie", cookieHeader())
+            .header("User-Agent", USER_AGENT).build()
+        val res = client.newCall(req).execute()
+        capture(res)
+        val text = res.body?.string() ?: ""
+        val code = res.code
+        res.close()
+        if (code != 200) return@withContext TwoStepState(unknown = true)
+        val j = try { JSONObject(text) } catch (_: Exception) { JSONObject() }
+        TwoStepState(
+            on = j.optBoolean("on", false),
+            method = j.optString("method").ifBlank { null },
+            backupLeft = if (j.has("backupLeft")) j.optInt("backupLeft") else null
+        )
+    }
 }
+
+/** A secret the server just minted. Show it before confirming - it is the only copy. */
+data class AppTwoStepStart(val secret: String, val uri: String)
+
+data class AppTwoStepDone(val backupCodes: List<String>)
+
+data class TwoStepState(val on: Boolean = false, val method: String? = null, val backupLeft: Int? = null, val unknown: Boolean = false)

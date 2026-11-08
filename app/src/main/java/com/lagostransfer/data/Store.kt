@@ -35,9 +35,35 @@ object SecureStore {
         }
     }
     fun removeAccount(ctx: Context, username: String) {
-        prefs(ctx).edit().remove("u_$username").remove("p_$username").remove("pin_$username").apply()
+        prefs(ctx).edit().remove("u_$username").remove("p_$username").remove("pin_$username")
+            .remove("totp_$username").remove("bk_$username").apply()
         if (prefs(ctx).all.keys.none { it.startsWith("u_") }) cachedPrefs = null
     }
+
+    /**
+     * The account owner's own authenticator secret. Kept only on this device,
+     * only for an account enrolled from here - never sent anywhere.
+     */
+    fun saveTotpSecret(ctx: Context, username: String, secret: String) {
+        prefs(ctx).edit().putString("totp_$username", secret).apply()
+    }
+
+    fun loadTotpSecret(ctx: Context, username: String): String? =
+        prefs(ctx).getString("totp_$username", null)?.ifBlank { null }
+
+    fun hasTotpSecret(ctx: Context, username: String): Boolean = loadTotpSecret(ctx, username) != null
+
+    fun removeTotpSecret(ctx: Context, username: String) {
+        prefs(ctx).edit().remove("totp_$username").apply()
+    }
+
+    /** One-time backup codes, shown once at enrolment. */
+    fun saveBackupCodes(ctx: Context, username: String, codes: List<String>) {
+        prefs(ctx).edit().putString("bk_$username", codes.joinToString(",")).apply()
+    }
+
+    fun loadBackupCodes(ctx: Context, username: String): List<String> =
+        prefs(ctx).getString("bk_$username", null)?.split(",")?.filter { it.isNotBlank() } ?: emptyList()
     fun saveCookies(ctx: Context, username: String, map: Map<String, String>) {
         prefs(ctx).edit().putString("ck_$username", map.entries.joinToString(";") { "${it.key}=${it.value}" }).apply()
     }

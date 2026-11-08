@@ -56,6 +56,14 @@ class UiState {
     var times by mutableStateOf("1")
     var note by mutableStateOf("")
     var lastError by mutableStateOf("")
+
+    /** App-method two-step, per account. Nothing here happens without a tap. */
+    var twoStepOn by mutableStateOf(false)
+    var twoStepMethod by mutableStateOf<String?>(null)
+    var twoStepBusy by mutableStateOf(false)
+    var twoStepSetup by mutableStateOf<AppTwoStepStart?>(null)
+    var backupCodes by mutableStateOf(listOf<String>())
+    var twoStepNote by mutableStateOf("")
 }
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
@@ -82,7 +90,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val pending = saved.mapNotNull { triple ->
                     val u = triple.first; val pp = triple.second; val pin = triple.third
                     if (accounts.any { it.username == u }) null else {
-                        val cli = LagosClient(u, pp, pin)
+                        val secret = withContext(Dispatchers.IO) { SecureStore.loadTotpSecret(app, u) }
+                        val cli = LagosClient(u, pp, pin, secret)
                         val cookies = withContext(Dispatchers.IO) { SecureStore.loadCookies(app, u) }
                         if (cookies.isNotEmpty()) cli.restoreCookies(cookies)
                         val acc = SessionAccount(u, pp, pin, cli)
@@ -192,6 +201,84 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) { SecureStore.removeAccount(app, username) }
         accounts.removeAll { it.username == username }
         uiMap.remove(username)
+    }
+
+    // ---- App-method two-step -------------------------------------------------
+    // Always: one account, started by a tap, never replacing a factor that is
+    // already on, secret kept only in this device's Keystore-backed store.
+
+    fun refreshTwoStepState(username: String) {
+        val acc = accounts.find { it.username == username } ?: return
+        val s = getUi(username)
+        viewModelScope.launch {
+            try {
+                val st = acc.client.twoStepState()
+                if (!st.unknown) {
+                    s.twoStepOn = st.on
+                    s.twoStepMethod = st.method
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /** Step 1: mint a secret. Shows it to the user; nothing is confirmed yet. */
+    fun startAppTwoStep(username: String, password: String, onDone: (String?) -> Unit) {
+        val acc = accounts.find { it.username == username } ?: return onDone("Account not found")
+        val s = getUi(username)
+        viewModelScope.launch {
+            s.twoStepBusy = true
+            try {
+                if (password.isBlank()) { onDone("Your password is needed to set this up"); return@launch }
+                val st = acc.client.twoStepState()
+                if (st.on) {
+                    onDone("Two-step is already on for @$username. This app will not replace an existing one.")
+                    return@launch
+                }
+                val start = acc.client.startAppTwoStep(password)
+                s.twoStepSetup = start
+                s.backupCodes = emptyList()
+                s.twoStepNote = "Add the secret to your authenticator, then confirm below"
+                onDone(null)
+            } catch (e: Exception) {
+                onDone(friendlyError(e))
+            } finally {
+                s.twoStepBusy = false
+            }
+        }
+    }
+
+    /** Step 2: confirm with a code from that secret, then store it locally. */
+    fun confirmAppTwoStep(username: String, atMillis: Long = System.currentTimeMillis(), onDone: (String?) -> Unit) {
+        val acc = accounts.find { it.username == username } ?: return onDone("Account not found")
+        val s = getUi(username)
+        val setup = s.twoStepSetup ?: return onDone("Start setup first")
+        viewModelScope.launch {
+            s.twoStepBusy = true
+            try {
+                val done = acc.client.confirmAppTwoStep(setup.secret, atMillis)
+                withContext(Dispatchers.IO) {
+                    SecureStore.saveTotpSecret(app, username, setup.secret)
+                    SecureStore.saveBackupCodes(app, username, done.backupCodes)
+                }
+                acc.client.adoptTotpSecret(setup.secret)
+                s.backupCodes = done.backupCodes
+                s.twoStepSetup = null
+                s.twoStepOn = true
+                s.twoStepMethod = "app"
+                s.twoStepNote = "Two-step is on for @$username"
+                onDone(null)
+            } catch (e: Exception) {
+                // Half-enrolled is worse than not enrolled: say so plainly.
+                onDone(friendlyError(e) + " - if this keeps failing, the account may be left with two-step switched on but unconfirmed. Keep the secret and try Confirm again.")
+            } finally {
+                s.twoStepBusy = false
+            }
+        }
+    }
+
+    fun dismissBackupCodes(username: String) {
+        getUi(username).backupCodes = emptyList()
     }
 
     fun refreshBalance(username: String, onError: ((String) -> Unit)? = null) {

@@ -597,9 +597,13 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
     val times = ui.times
     val note = ui.note
 
+    // Password is only asked for at the moment of enrolment - never stored by the form.
+    var tsPassword by remember(acc.username) { mutableStateOf("") }
+
     LaunchedEffect(acc.username) {
         vm.refreshBalance(acc.username)
         vm.loadIncoming(acc.username)
+        vm.refreshTwoStepState(acc.username)
     }
 
     val amt = amount.toLongOrNull() ?: 0L
@@ -626,6 +630,88 @@ fun AccountPage(acc: SessionAccount, snacks: SnackbarHostState, vm: AppViewModel
                     )
                     OutlinedButton(enabled = !ui.refreshing, onClick = { vm.refreshBalance(acc.username) }) {
                         if (ui.refreshing) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp) else Text("Refresh balance")
+                    }
+                }
+            }
+        }
+        item {
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Two-step (authenticator app)", fontWeight = FontWeight.Bold)
+                        Text(
+                            if (ui.twoStepOn) "on · ${ui.twoStepMethod ?: "app"}" else "off",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                    Text(
+                        "Codes are made on this phone from your own secret. The secret is never sent anywhere.",
+                        style = MaterialTheme.typography.labelSmall
+                    )
+
+                    val setup = ui.twoStepSetup
+                    val backups = ui.backupCodes
+
+                    if (backups.isNotEmpty()) {
+                        Text("Backup codes - shown once. Keep them somewhere safe.", fontWeight = FontWeight.SemiBold)
+                        backups.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                        Button(onClick = { vm.dismissBackupCodes(acc.username) }, modifier = Modifier.fillMaxWidth()) {
+                            Text("I have saved them")
+                        }
+                    } else if (setup != null) {
+                        Text("1. Add this secret to your authenticator", fontWeight = FontWeight.SemiBold)
+                        Text(setup.secret, style = MaterialTheme.typography.bodyMedium)
+                        if (setup.uri.isNotBlank()) {
+                            Text(setup.uri, style = MaterialTheme.typography.labelSmall)
+                            TextButton(onClick = {
+                                val cb = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                cb.setPrimaryClip(android.content.ClipData.newPlainText("otpauth", setup.uri))
+                                scope.launch { snacks.showSnackbar("Setup URI copied") }
+                            }) { Text("Copy setup URI") }
+                        }
+                        Text(
+                            "2. Then confirm. If confirming fails, the account can be left half set up - keep the secret.",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                        Button(
+                            enabled = !ui.twoStepBusy,
+                            onClick = {
+                                vm.confirmAppTwoStep(acc.username) { err ->
+                                    scope.launch { snacks.showSnackbar(err ?: "Two-step is on") }
+                                    tsPassword = ""
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text(if (ui.twoStepBusy) "Confirming..." else "Confirm") }
+                    } else if (ui.twoStepOn) {
+                        Text(
+                            if (ui.twoStepMethod == "app")
+                                "This account asks for an authenticator code at login and on large sends. The app answers it from your own secret."
+                            else
+                                "This account uses email codes. Nothing on the phone can replace that - only the account owner can.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    } else {
+                        OutlinedTextField(
+                            tsPassword,
+                            { tsPassword = it },
+                            label = { Text("Password (to set this up)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation()
+                        )
+                        Button(
+                            enabled = !ui.twoStepBusy && tsPassword.isNotBlank(),
+                            onClick = {
+                                vm.startAppTwoStep(acc.username, tsPassword) { err ->
+                                    scope.launch { snacks.showSnackbar(err ?: "Secret created - add it to your authenticator") }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text(if (ui.twoStepBusy) "Starting..." else "Set up app two-step") }
+                    }
+                    if (ui.twoStepNote.isNotBlank()) {
+                        Text(ui.twoStepNote, style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
