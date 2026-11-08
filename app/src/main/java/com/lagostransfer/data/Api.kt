@@ -95,6 +95,19 @@ class LagosClient(
     @Volatile private var pendingChallenge: String? = null
     @Volatile private var pendingMethod: String? = null
 
+    /**
+     * Server clock minus phone clock. A phone a few seconds fast or slow
+     * produces codes in the wrong 30s window and the server rejects them.
+     */
+    @Volatile private var skewMs: Long = 0L
+
+    private fun learnClock(text: String) {
+        val n = try { JSONObject(text).optLong("now", 0L) } catch (_: Exception) { 0L }
+        if (n > 0) skewMs = n - System.currentTimeMillis()
+    }
+
+    private fun serverNow(): Long = System.currentTimeMillis() + skewMs
+
     val needsSecondFactor: Boolean get() = pendingChallenge != null
     fun secondFactorMethod(): String? = pendingMethod
 
@@ -182,6 +195,7 @@ class LagosClient(
             val text = res.body?.string() ?: ""
             val code = res.code
             res.close()
+            learnClock(text)
             if (code == 200) return@withContext true
 
             val j = try { JSONObject(text) } catch (_: Exception) { JSONObject() }
@@ -232,10 +246,10 @@ class LagosClient(
     private suspend fun nextTotpCode(): String? {
         val secret = totpSecret ?: return null
         if (!Totp.isPlausibleSecret(secret)) return null
-        var c = Totp.code(secret)
+        var c = Totp.code(secret, serverNow())
         if (c == lastTotpCode) {
-            kotlinx.coroutines.delay(Totp.millisLeft() + 1_000L)
-            c = Totp.code(secret)
+            kotlinx.coroutines.delay(Totp.millisLeft(serverNow()) + 1_000L)
+            c = Totp.code(secret, serverNow())
         }
         lastTotpCode = c
         return c
@@ -280,8 +294,10 @@ class LagosClient(
         var code = res.code
         var text = res.body?.string() ?: ""
         res.close()
+        learnClock(text)
 
         // The action itself wants a second factor (usually a large send).
+        var answeredStep = false
         val kind = if (code in 400..499) errorCodeOf(text) else ""
         if (kind == "two_factor" || kind == "two_factor_step") {
             val c = nextTotpCode()
@@ -295,6 +311,7 @@ class LagosClient(
                 }
                 val solved = post2fa(payload)
                 if (solved.code in 200..299) {
+                    answeredStep = true
                     res = client.newCall(build()).execute()
                     capture(res)
                     code = res.code
@@ -304,7 +321,7 @@ class LagosClient(
             }
         }
 
-        if (code == 401 && !isPinProblem(text)) {
+        if (code == 401 && !isPinProblem(text) && !answeredStep) {
             val back = loginLock.withLock { login() }
             if (back) {
                 res = client.newCall(build()).execute()
@@ -468,8 +485,8 @@ class LagosClient(
      * Step 2: confirm with a code from that secret and collect the backup codes.
      * Takes the secret explicitly - the account's own stored secret is not it yet.
      */
-    suspend fun confirmAppTwoStep(secret: String, atMillis: Long = System.currentTimeMillis()): AppTwoStepDone = withContext(Dispatchers.IO) {
-        val code = Totp.code(secret, atMillis)
+    suspend fun confirmAppTwoStep(secret: String, atMillis: Long = 0L): AppTwoStepDone = withContext(Dispatchers.IO) {
+        val code = Totp.code(secret, if (atMillis > 0L) atMillis else serverNow())
         val r = post2fa(JSONObject().put("action", "confirm").put("method", "app").put("code", code))
         if (r.code !in 200..299) throw ApiException(r.code, errorOf(r.body).ifBlank { "That code was not accepted" }, errorCodeOf(r.body))
         val j = JSONObject(r.body.ifBlank { "{}" })

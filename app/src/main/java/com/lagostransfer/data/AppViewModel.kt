@@ -280,7 +280,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Step 2: confirm with a code from that secret, then store it locally. */
-    fun confirmAppTwoStep(username: String, atMillis: Long = System.currentTimeMillis(), onDone: (String?) -> Unit) {
+    fun confirmAppTwoStep(username: String, atMillis: Long = 0L, onDone: (String?) -> Unit) {
         val acc = accounts.find { it.username == username } ?: return onDone("Account not found")
         val s = getUi(username)
         val setup = s.twoStepSetup ?: return onDone("Start setup first")
@@ -656,6 +656,8 @@ fun friendlyError(e: Throwable): String {
         "timeout" in m.lowercase() -> "Network timeout - retrying"
         m.contains("401") || m.contains("Session expired") -> "Session expired - logging in again"
         m.contains("429") -> "Too many tries - waiting"
+        m.contains("paused", ignoreCase = true) || m.contains("too many wrong codes", ignoreCase = true) ->
+            "Two-step codes are paused for a while after wrong entries. Wait, then try once - do not keep guessing."
         else -> m.take(80).ifBlank { "Something went wrong" }
     }
 }
